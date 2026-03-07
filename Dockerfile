@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-bullseye
 
 # Install Chrome + Chromedriver
 RUN apt-get update && apt-get install -y \
