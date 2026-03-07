@@ -36,9 +36,19 @@ RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd6
 WORKDIR /app
 
 # Install Python dependencies
-# Selenium 4.6+ includes Selenium Manager which auto-downloads ChromeDriver
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Pre-download tls-client .so so it's baked into the image
+# Render blocks outbound GitHub downloads at runtime — this runs during build where network is open
+RUN TLS_LIB_DIR=$(python -c "import tls_client, os; print(os.path.join(os.path.dirname(tls_client.__file__), 'dependencies'))") \
+    && mkdir -p "$TLS_LIB_DIR" \
+    && wget -q "https://github.com/bogdanfinn/tls-client/releases/download/v1.13.1/tls-client-linux-amd64-v1.13.1.so" \
+         -O "$TLS_LIB_DIR/tls-client-linux-amd64-v1.13.1.so" \
+    && wget -q "https://github.com/bogdanfinn/tls-client/releases/download/v1.13.1/tls-client-linux-amd64-1.13.1.so" \
+         -O "$TLS_LIB_DIR/tls-client-linux-amd64-1.13.1.so" \
+    && echo "TLS libs downloaded to $TLS_LIB_DIR" \
+    && ls -lh "$TLS_LIB_DIR"
 
 # Copy app
 COPY . .
