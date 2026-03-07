@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: ztm-data-api
+    env: python
+    region: frankfurt
+    plan: free
+    buildCommand: |
+      apt-get update && apt-get install -y chromium-driver chromium && pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SOCCERDATA_DIR
+        value: /tmp/soccerdata_cache
+      - key: SOCCERDATA_NOCACHE
+        value: "false"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+    healthCheckPath: /health
