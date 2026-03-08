@@ -36,14 +36,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-bake tls-client .so during Docker build (Render blocks GitHub at runtime)
-# wrapper-tls-requests installs tls_client — locate via find, no python import needed
-RUN TLS_LIB_DIR=$(find /usr/local/lib -type d -name "tls_client" 2>/dev/null | head -1)/dependencies \
-    && echo "Target: $TLS_LIB_DIR" \
-    && mkdir -p "$TLS_LIB_DIR" \
-    && wget -q "https://github.com/bogdanfinn/tls-client/releases/download/v1.13.1/tls-client-linux-ubuntu-amd64-1.13.1.so" \
-         -O "$TLS_LIB_DIR/tls-client-linux-ubuntu-amd64-1.13.1.so" \
-    && ls -lh "$TLS_LIB_DIR"
+# Pre-download TLS library during build using the library's own download mechanism
+# This runs while Docker build has network access; at Render runtime GitHub is blocked
+RUN python -c "from tls_requests import TLSLibrary; TLSLibrary.download(version='1.13.1')" \
+    && find /usr/local/lib -name "*.so" -path "*/tls_requests/*" -o -name "*.so" -path "*/tls_client/*" | head -20
 
 COPY . .
 
