@@ -112,8 +112,12 @@ def player_profile(tm_id: str):
     club_href = club_tag["href"] if club_tag else None
     club_tm_id = club_href.split("/verein/")[1].split("/")[0] if club_href and "/verein/" in club_href else None
 
-    nat_imgs = soup.select("span.data-header__nationality img")
-    nationalities = [img.get("title", "") for img in nat_imgs]
+    nat_imgs = (
+        soup.select("span.data-header__nationality img") or
+        soup.select("div.data-header__nationality img") or
+        soup.select("img.flaggenrahmen")
+    )
+    nationalities = [img.get("title", "") for img in nat_imgs if img.get("title")]
 
     data = {
         "tm_id":          tm_id,
@@ -315,8 +319,12 @@ def fixtures(
         away_td   = row.find("td", class_="verein-gast")
         if not (home_td and result_td and away_td):
             continue
-        home_a  = home_td.find("a")
-        away_a  = away_td.find("a")
+        # Home: last <a> with /verein/ in href
+        home_links = [a for a in home_td.find_all("a") if "/verein/" in a.get("href","")]
+        home_a = home_links[-1] if home_links else home_td.find("a")
+        # Away: first <a> with /verein/ in href
+        away_links = [a for a in away_td.find_all("a") if "/verein/" in a.get("href","")]
+        away_a = away_links[0] if away_links else away_td.find("a")
         home_id = home_a["href"].split("/verein/")[1].split("/")[0] if home_a and "/verein/" in home_a.get("href","") else None
         away_id = away_a["href"].split("/verein/")[1].split("/")[0] if away_a and "/verein/" in away_a.get("href","") else None
         result_a = result_td.find("a")
