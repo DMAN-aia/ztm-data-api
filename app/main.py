@@ -9,7 +9,7 @@ from app.endpoints import tm
 app = FastAPI(
     title="ZTM Data API",
     description="Football data voor ZoomtheMatch — Transfermarkt",
-    version="3.0.0",
+    version="4.0.0",
 )
 
 app.add_middleware(
@@ -23,7 +23,7 @@ app.include_router(tm.router, prefix="/tm", tags=["Transfermarkt"])
 
 @app.get("/")
 def root():
-    return {"service": "ZTM Data API", "version": "3.0.0", "sources": ["tm"], "status": "ok"}
+    return {"service": "ZTM Data API", "version": "4.0.0", "sources": ["tm"], "status": "ok"}
 
 @app.get("/health")
 def health():
