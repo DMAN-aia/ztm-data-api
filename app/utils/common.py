@@ -14,8 +14,7 @@ from typing import Any, Optional
 # LEAGUE MAPS
 # ─────────────────────────────────────────
 
-# soccerdata league IDs
-# Format: our internal code → soccerdata league string
+# Legacy league map (retained for reference)
 SOCCERDATA_LEAGUES = {
     "GB1":  "ENG-Premier League",
     "GB2":  "ENG-Championship",
@@ -52,7 +51,7 @@ UNDERSTAT_LEAGUES = {
 # For persistent caching, implement wp-side caching via api_cache table
 # ─────────────────────────────────────────
 
-CACHE_DIR = Path(os.getenv("SOCCERDATA_DIR", "/tmp/soccerdata_cache"))
+CACHE_DIR = Path(os.getenv("CACHE_DIR", "/tmp/ztm_cache"))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 def cache_key(source: str, endpoint: str, **params) -> str:

@@ -1,86 +1,202 @@
 """
-FBref endpoints — via soccerdata
-All data sourced from fbref.com (StatHead/Sports Reference)
+FBref endpoints — eigen scraper (requests + BeautifulSoup/lxml)
+Geen soccerdata.
 
-Available endpoints:
+Endpoints:
   GET /fbref/schedule/{league_id}
   GET /fbref/player/season/{league_id}
   GET /fbref/team/season/{league_id}
-  GET /fbref/player/match/{league_id}
-  GET /fbref/team/match/{league_id}
-
-league_id examples: GB1, L1, IT1, FR1, NL1, ES1, CL
-stat_type options: standard, shooting, passing, defense, possession, misc, keeper
 """
 
-import soccerdata as sd
+import time
+import requests
+from bs4 import BeautifulSoup
 from fastapi import APIRouter, HTTPException, Query
-from app.utils.common import (
-    SOCCERDATA_LEAGUES, ok, err, cache_key, cache_get, cache_set, resolve_league
-)
+from app.utils.common import ok, cache_key, cache_get, cache_set
 
 router = APIRouter()
 
-# Cache TTLs
-TTL_SCHEDULE   = 3600      # 1 hour
-TTL_STATS      = 21600     # 6 hours
-TTL_LIVE       = 300       # 5 minutes (current season schedule)
+TTL_SCHEDULE = 3600
+TTL_STATS    = 21600
 
+FBREF_LEAGUES = {
+    "GB1": ("9",  "Premier-League"),
+    "GB2": ("10", "Championship"),
+    "L1":  ("20", "Bundesliga"),
+    "IT1": ("11", "Serie-A"),
+    "FR1": ("13", "Ligue-1"),
+    "NL1": ("23", "Eredivisie"),
+    "ES1": ("12", "La-Liga"),
+    "CL":  ("8",  "Champions-League"),
+    "EL":  ("19", "Europa-League"),
+    "MLS": ("22", "Major-League-Soccer"),
+    "JP1": ("25", "J1-League"),
+    "KR1": ("55", "K-League-1"),
+    "SA":  ("70", "Saudi-Pro-League"),
+    "AL":  ("53", "A-League-Men"),
+}
 
-def get_fbref(league_id: str, season: str):
-    league = resolve_league(league_id, SOCCERDATA_LEAGUES)
-    if not league:
-        raise HTTPException(status_code=400, detail=f"Unsupported league: {league_id}")
-    return sd.FBref(leagues=league, seasons=season, no_cache=True)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": "https://fbref.com/",
+}
+
+def format_season(s: str) -> str:
+    """'2425' → '2024-2025'"""
+    if len(s) == 4:
+        return f"20{s[:2]}-20{s[2:]}"
+    return s
+
+def fbref_get(url: str) -> BeautifulSoup:
+    time.sleep(4)  # FBref: max 20 req/min
+    resp = requests.get(url, headers=HEADERS, timeout=30)
+    if resp.status_code == 429:
+        raise HTTPException(status_code=429, detail="FBref rate limit hit — try again in 60s")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"FBref returned {resp.status_code}")
+    return BeautifulSoup(resp.text, "lxml")
+
+def parse_table(soup: BeautifulSoup, table_id: str) -> list:
+    table = soup.find("table", {"id": table_id})
+    if not table:
+        return []
+    # Headers from last thead row (FBref has multi-row headers)
+    thead = table.find("thead")
+    headers = []
+    if thead:
+        for th in thead.find_all("tr")[-1].find_all(["th", "td"]):
+            headers.append(th.get("data-stat") or th.get_text(strip=True) or f"col_{len(headers)}")
+    tbody = table.find("tbody")
+    if not tbody:
+        return []
+    rows = []
+    for tr in tbody.find_all("tr"):
+        classes = tr.get("class", [])
+        if "thead" in classes or "spacer" in classes or "partial_table" in classes:
+            continue
+        cells = tr.find_all(["td", "th"])
+        if not cells:
+            continue
+        row = {}
+        for cell in cells:
+            key = cell.get("data-stat", "")
+            if not key:
+                continue
+            val = cell.get_text(strip=True)
+            # Strip footnotes
+            for sup in cell.find_all("sup"):
+                sup.decompose()
+            val = cell.get_text(strip=True)
+            try:
+                val = int(val)
+            except ValueError:
+                try:
+                    val = float(val)
+                except ValueError:
+                    pass
+            row[key] = val
+        if row:
+            rows.append(row)
+    return rows
 
 
 # ─────────────────────────────────────────
-# SCHEDULE / FIXTURES
+# SCHEDULE
 # ─────────────────────────────────────────
 
 @router.get("/schedule/{league_id}")
 def schedule(
     league_id: str,
-    season: str = Query("2425", description="Season code, e.g. 2425 for 2024/25"),
+    season: str = Query("2425"),
 ):
-    """Match schedule + results for a league/season."""
-    ck = cache_key("fbref", "schedule", league=league_id, season=season)
+    lid = league_id.upper()
+    if lid not in FBREF_LEAGUES:
+        raise HTTPException(status_code=400, detail=f"Unsupported league: {league_id}")
+
+    ck = cache_key("fbref", "schedule", league=lid, season=season)
     cached = cache_get(ck, TTL_SCHEDULE)
     if cached:
         return ok(cached, "fbref", cached=True)
 
-    try:
-        fbref = get_fbref(league_id, season)
-        df = fbref.read_schedule()
-        data = df.reset_index().to_dict(orient="records")
-        cache_set(ck, data)
-        return ok(data, "fbref")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    comp_id, comp_name = FBREF_LEAGUES[lid]
+    season_str = format_season(season)
+
+    # Try season-specific URL first, fall back to current season
+    urls = [
+        f"https://fbref.com/en/comps/{comp_id}/{season_str}/schedule/{season_str}-{comp_name}-Scores-and-Fixtures",
+        f"https://fbref.com/en/comps/{comp_id}/schedule/{comp_name}-Scores-and-Fixtures",
+    ]
+
+    data = []
+    for url in urls:
+        try:
+            soup = fbref_get(url)
+            # FBref schedule table id varies — find any sched_ table
+            table = soup.find("table", id=lambda x: x and x.startswith("sched_"))
+            if table:
+                data = parse_table(soup, table["id"])
+                if data:
+                    break
+        except HTTPException:
+            raise
+        except Exception:
+            continue
+
+    if not data:
+        raise HTTPException(status_code=502, detail="Could not parse FBref schedule")
+
+    cache_set(ck, data)
+    return ok(data, "fbref")
 
 
 # ─────────────────────────────────────────
 # PLAYER SEASON STATS
 # ─────────────────────────────────────────
 
+STAT_TABLE_IDS = {
+    "standard":   "stats_standard",
+    "shooting":   "stats_shooting",
+    "passing":    "stats_passing",
+    "defense":    "stats_defense",
+    "possession": "stats_possession",
+    "misc":       "stats_misc",
+    "keeper":     "stats_keeper",
+}
+
 @router.get("/player/season/{league_id}")
 def player_season_stats(
     league_id: str,
     season: str    = Query("2425"),
-    stat_type: str = Query("standard", description="standard|shooting|passing|defense|possession|misc|keeper"),
+    stat_type: str = Query("standard"),
 ):
-    """Aggregated player stats for the season."""
-    ck = cache_key("fbref", "player_season", league=league_id, season=season, stat=stat_type)
+    lid = league_id.upper()
+    if lid not in FBREF_LEAGUES:
+        raise HTTPException(status_code=400, detail=f"Unsupported league: {league_id}")
+    if stat_type not in STAT_TABLE_IDS:
+        raise HTTPException(status_code=400, detail=f"Unknown stat_type: {stat_type}")
+
+    ck = cache_key("fbref", "player_season", league=lid, season=season, stat=stat_type)
     cached = cache_get(ck, TTL_STATS)
     if cached:
         return ok(cached, "fbref", cached=True)
 
+    comp_id, comp_name = FBREF_LEAGUES[lid]
+    season_str = format_season(season)
+    stat_slug = stat_type if stat_type != "standard" else "stats"
+    url = f"https://fbref.com/en/comps/{comp_id}/{season_str}/{stat_slug}/{season_str}-{comp_name}-Stats"
+
     try:
-        fbref = get_fbref(league_id, season)
-        df = fbref.read_player_season_stats(stat_type=stat_type)
-        data = df.reset_index().to_dict(orient="records")
+        soup = fbref_get(url)
+        table_id = STAT_TABLE_IDS[stat_type]
+        data = parse_table(soup, table_id)
+        if not data:
+            raise HTTPException(status_code=502, detail=f"Table {table_id} not found")
         cache_set(ck, data)
         return ok(data, "fbref")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -95,77 +211,32 @@ def team_season_stats(
     season: str    = Query("2425"),
     stat_type: str = Query("standard"),
 ):
-    """Aggregated team stats for the season."""
-    ck = cache_key("fbref", "team_season", league=league_id, season=season, stat=stat_type)
+    lid = league_id.upper()
+    if lid not in FBREF_LEAGUES:
+        raise HTTPException(status_code=400, detail=f"Unsupported league: {league_id}")
+
+    ck = cache_key("fbref", "team_season", league=lid, season=season, stat=stat_type)
     cached = cache_get(ck, TTL_STATS)
     if cached:
         return ok(cached, "fbref", cached=True)
 
-    try:
-        fbref = get_fbref(league_id, season)
-        df = fbref.read_team_season_stats(stat_type=stat_type)
-        data = df.reset_index().to_dict(orient="records")
-        cache_set(ck, data)
-        return ok(data, "fbref")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ─────────────────────────────────────────
-# PLAYER MATCH STATS
-# ─────────────────────────────────────────
-
-@router.get("/player/match/{league_id}")
-def player_match_stats(
-    league_id: str,
-    season: str    = Query("2425"),
-    stat_type: str = Query("standard"),
-    match_id: str  = Query(None, description="Optional: single FBref match ID"),
-):
-    """Per-match player stats. Optionally filter by match_id."""
-    ck = cache_key("fbref", "player_match", league=league_id, season=season, stat=stat_type, mid=match_id)
-    cached = cache_get(ck, TTL_STATS)
-    if cached:
-        return ok(cached, "fbref", cached=True)
+    comp_id, comp_name = FBREF_LEAGUES[lid]
+    season_str = format_season(season)
+    stat_slug = stat_type if stat_type != "standard" else "stats"
+    url = f"https://fbref.com/en/comps/{comp_id}/{season_str}/{stat_slug}/{season_str}-{comp_name}-Stats"
 
     try:
-        fbref = get_fbref(league_id, season)
-        if match_id:
-            df = fbref.read_player_match_stats(stat_type=stat_type, match_id=match_id)
-        else:
-            df = fbref.read_player_match_stats(stat_type=stat_type)
-        data = df.reset_index().to_dict(orient="records")
+        soup = fbref_get(url)
+        # Team tables have "for" prefix
+        table_id = f"stats_squads_{stat_type}_for"
+        if stat_type == "standard":
+            table_id = "stats_squads_standard_for"
+        data = parse_table(soup, table_id)
+        if not data:
+            raise HTTPException(status_code=502, detail=f"Team table not found for {stat_type}")
         cache_set(ck, data)
         return ok(data, "fbref")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ─────────────────────────────────────────
-# TEAM MATCH STATS
-# ─────────────────────────────────────────
-
-@router.get("/team/match/{league_id}")
-def team_match_stats(
-    league_id: str,
-    season: str    = Query("2425"),
-    stat_type: str = Query("schedule", description="schedule|shooting|passing|defense|possession|misc|keeper"),
-    team: str      = Query(None, description="Optional: filter by team name"),
-):
-    """Per-match team stats."""
-    ck = cache_key("fbref", "team_match", league=league_id, season=season, stat=stat_type, team=team)
-    cached = cache_get(ck, TTL_STATS)
-    if cached:
-        return ok(cached, "fbref", cached=True)
-
-    try:
-        fbref = get_fbref(league_id, season)
-        kwargs = {"stat_type": stat_type}
-        if team:
-            kwargs["team"] = team
-        df = fbref.read_team_match_stats(**kwargs)
-        data = df.reset_index().to_dict(orient="records")
-        cache_set(ck, data)
-        return ok(data, "fbref")
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

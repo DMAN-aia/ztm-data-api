@@ -1,6 +1,7 @@
 """
 ZTM Data API — main entry point
-Sources: FBref, WhoScored, Understat, Sofascore (via soccerdata) + Transfermarkt (fork)
+Sources: FBref, Sofascore, Understat, Transfermarkt (eigen scrapers)
+WhoScored: tijdelijk geparkeerd
 """
 
 from fastapi import FastAPI
@@ -10,8 +11,8 @@ from app.endpoints import fbref, whoscored, understat, sofascore, tm
 
 app = FastAPI(
     title="ZTM Data API",
-    description="Football data aggregator for ZoomtheMatch — FBref, WhoScored, Understat, Sofascore, Transfermarkt",
-    version="1.0.0",
+    description="Football data aggregator for ZoomtheMatch",
+    version="2.0.0",
 )
 
 app.add_middleware(
@@ -31,8 +32,14 @@ app.include_router(tm.router,         prefix="/tm",         tags=["Transfermarkt
 def root():
     return {
         "service": "ZTM Data API",
-        "version": "1.0.0",
-        "sources": ["fbref", "whoscored", "understat", "sofascore", "tm"],
+        "version": "2.0.0",
+        "sources": {
+            "fbref":      "active",
+            "sofascore":  "active",
+            "understat":  "active",
+            "tm":         "active",
+            "whoscored":  "unavailable",
+        },
         "status": "ok",
     }
 
