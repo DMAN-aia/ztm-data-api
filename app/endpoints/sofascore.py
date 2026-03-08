@@ -1,10 +1,6 @@
 """
 Sofascore endpoints — eigen scraper (unofficiële JSON API)
-Geen soccerdata.
-
-Endpoints:
-  GET /sofascore/schedule/{league_id}
-  GET /sofascore/standings/{league_id}
+Season IDs worden dynamisch opgehaald via de Sofascore API.
 """
 
 import requests
@@ -15,48 +11,26 @@ router = APIRouter()
 
 TTL_SCHEDULE  = 1800
 TTL_STANDINGS = 3600
+TTL_SEASON_ID = 86400  # season ID cache 24 uur
 
-# Sofascore tournament IDs
 SOFASCORE_TOURNAMENTS = {
-    "GB1":  (17,   "Premier League"),
-    "GB2":  (18,   "Championship"),
-    "L1":   (35,   "Bundesliga"),
-    "IT1":  (23,   "Serie A"),
-    "FR1":  (34,   "Ligue 1"),
-    "NL1":  (37,   "Eredivisie"),
-    "ES1":  (8,    "La Liga"),
-    "CL":   (7,    "UEFA Champions League"),
-    "EL":   (679,  "UEFA Europa League"),
-    "MLS":  (242,  "MLS"),
-    "JP1":  (196,  "J1 League"),
-    "KR1":  (55,   "K League 1"),
-    "TH1":  (107,  "Thai League 1"),
-    "VN1":  (390,  "V.League 1"),
-    "MY1":  (672,  "Super League"),
-    "SA":   (955,  "Saudi Pro League"),
-    "AL":   (180,  "A-League Men"),
-}
-
-# Season IDs per tournament for 2024/25
-# Sofascore uses numeric season IDs — these are for 2024/25
-SOFASCORE_SEASONS = {
-    "GB1":  61627,
-    "GB2":  61628,
-    "L1":   63516,
-    "IT1":  63515,
-    "FR1":  63517,
-    "NL1":  63518,
-    "ES1":  63519,
-    "CL":   61644,
-    "EL":   61645,
-    "MLS":  57317,
-    "JP1":  58882,
-    "KR1":  58527,
-    "TH1":  58528,
-    "VN1":  58529,
-    "MY1":  58530,
-    "SA":   63513,
-    "AL":   58531,
+    "GB1":  17,
+    "GB2":  18,
+    "L1":   35,
+    "IT1":  23,
+    "FR1":  34,
+    "NL1":  37,
+    "ES1":  8,
+    "CL":   7,
+    "EL":   679,
+    "MLS":  242,
+    "JP1":  196,
+    "KR1":  55,
+    "TH1":  107,
+    "VN1":  390,
+    "MY1":  672,
+    "SA":   955,
+    "AL":   180,
 }
 
 HEADERS = {
@@ -65,31 +39,54 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.sofascore.com/",
     "Origin": "https://www.sofascore.com",
+    "Cache-Control": "no-cache",
 }
 
 BASE = "https://api.sofascore.com/api/v1"
 
 def ss_get(path: str) -> dict:
-    url = f"{BASE}{path}"
-    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp = requests.get(f"{BASE}{path}", headers=HEADERS, timeout=15)
     if resp.status_code == 403:
-        raise HTTPException(status_code=403, detail="Sofascore blocked request")
+        raise HTTPException(status_code=403, detail="Sofascore blocked request — IP may be restricted")
     if resp.status_code == 404:
-        raise HTTPException(status_code=404, detail="Sofascore: not found")
+        raise HTTPException(status_code=404, detail="Sofascore: resource not found")
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Sofascore returned {resp.status_code}")
     return resp.json()
 
+def get_season_id(tournament_id: int, season_code: str) -> int:
+    """Fetch current/recent season ID from Sofascore dynamically."""
+    ck = cache_key("sofascore", "season_id", tid=tournament_id, season=season_code)
+    cached = cache_get(ck, TTL_SEASON_ID)
+    if cached:
+        return cached["id"]
 
-# ─────────────────────────────────────────
-# SCHEDULE / RESULTS
-# ─────────────────────────────────────────
+    data = ss_get(f"/unique-tournament/{tournament_id}/seasons")
+    seasons = data.get("seasons", [])
+    if not seasons:
+        raise HTTPException(status_code=502, detail="No seasons found from Sofascore")
+
+    # Try to match season_code (e.g. "2425" → year 2024 or 2025)
+    if len(season_code) == 4:
+        y1 = int("20" + season_code[:2])
+        y2 = int("20" + season_code[2:])
+        for s in seasons:
+            yr = s.get("year", "")
+            if str(y1) in str(yr) or str(y2) in str(yr):
+                cache_set(ck, {"id": s["id"]})
+                return s["id"]
+
+    # Fallback: most recent season
+    season = seasons[0]
+    cache_set(ck, {"id": season["id"]})
+    return season["id"]
+
 
 @router.get("/schedule/{league_id}")
 def schedule(
     league_id: str,
     season: str = Query("2425"),
-    page: int   = Query(0, description="Pagination page (0-based)"),
+    page: int   = Query(0),
 ):
     lid = league_id.upper()
     if lid not in SOFASCORE_TOURNAMENTS:
@@ -100,10 +97,8 @@ def schedule(
     if cached:
         return ok(cached, "sofascore", cached=True)
 
-    tournament_id, _ = SOFASCORE_TOURNAMENTS[lid]
-    season_id = SOFASCORE_SEASONS.get(lid)
-    if not season_id:
-        raise HTTPException(status_code=400, detail=f"No season ID for {league_id}")
+    tournament_id = SOFASCORE_TOURNAMENTS[lid]
+    season_id = get_season_id(tournament_id, season)
 
     try:
         data = ss_get(f"/unique-tournament/{tournament_id}/season/{season_id}/events/last/{page}")
@@ -113,8 +108,8 @@ def schedule(
         for e in events:
             home = e.get("homeTeam", {})
             away = e.get("awayTeam", {})
-            score_home = e.get("homeScore", {})
-            score_away = e.get("awayScore", {})
+            sh   = e.get("homeScore", {})
+            sa   = e.get("awayScore", {})
             matches.append({
                 "match_id":        e.get("id"),
                 "status":          e.get("status", {}).get("description"),
@@ -124,11 +119,11 @@ def schedule(
                 "home_team_id":    home.get("id"),
                 "away_team":       away.get("name"),
                 "away_team_id":    away.get("id"),
-                "home_score":      score_home.get("current"),
-                "away_score":      score_away.get("current"),
-                "home_score_ht":   score_home.get("period1"),
-                "away_score_ht":   score_away.get("period1"),
-                "winner_code":     e.get("winnerCode"),  # 1=home, 2=away, 3=draw
+                "home_score":      sh.get("current"),
+                "away_score":      sa.get("current"),
+                "home_score_ht":   sh.get("period1"),
+                "away_score_ht":   sa.get("period1"),
+                "winner_code":     e.get("winnerCode"),
             })
 
         cache_set(ck, matches)
@@ -138,10 +133,6 @@ def schedule(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# ─────────────────────────────────────────
-# STANDINGS
-# ─────────────────────────────────────────
 
 @router.get("/standings/{league_id}")
 def standings(
@@ -157,17 +148,15 @@ def standings(
     if cached:
         return ok(cached, "sofascore", cached=True)
 
-    tournament_id, _ = SOFASCORE_TOURNAMENTS[lid]
-    season_id = SOFASCORE_SEASONS.get(lid)
-    if not season_id:
-        raise HTTPException(status_code=400, detail=f"No season ID for {league_id}")
+    tournament_id = SOFASCORE_TOURNAMENTS[lid]
+    season_id = get_season_id(tournament_id, season)
 
     try:
         data = ss_get(f"/unique-tournament/{tournament_id}/season/{season_id}/standings/total")
-        standings_raw = data.get("standings", [{}])[0].get("rows", [])
+        rows = data.get("standings", [{}])[0].get("rows", [])
 
         table = []
-        for row in standings_raw:
+        for row in rows:
             team = row.get("team", {})
             table.append({
                 "position":        row.get("position"),
@@ -181,7 +170,6 @@ def standings(
                 "goals_against":   row.get("scoresAgainst"),
                 "goal_difference": row.get("goalDifference"),
                 "points":          row.get("points"),
-                "form":            row.get("promotion", {}).get("text"),
             })
 
         cache_set(ck, table)
