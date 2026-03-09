@@ -1,5 +1,5 @@
 """
-Transfermarkt endpoints — ZTM Data API v35
+Transfermarkt endpoints — ZTM Data API v36
 Basis: v20 (getest, werkend). Delta: nieuwe velden op bestaande endpoints + 6 nieuwe endpoints.
 
 Endpoints (bestaand, uitgebreid):
@@ -82,7 +82,9 @@ COMP_SLUG = {
     "TS1": ("fortuna-liga",            "TS1"),
     "SK1": ("super-liga",              "SK1"),
     "UNG1":("nb-i",                    "UNG1"),
+    "L2":  ("2-bundesliga",            "L2"),
     "L3":  ("3-liga",                  "L3"),
+    "MLS": ("major-league-soccer",     "MLS"),
     "USAM":("usl-championship",        "USAM"),
     "MLP": ("mls-next-pro",            "MLP"),
 }
@@ -131,26 +133,27 @@ COMPETITIONS_METADATA = [
 
 # competition_tm_id → display naam (voor match meta)
 COMP_NAMES = {
-    "GB1": "Premier League",        "GB2": "Championship",
-    "L1":  "Bundesliga",            "L2":  "2. Bundesliga",
-    "IT1": "Serie A",               "IT2": "Serie B",
-    "FR1": "Ligue 1",               "FR2": "Ligue 2",
-    "NL1": "Eredivisie",            "ES1": "La Liga",
-    "CL":  "UEFA Champions League", "EL":  "UEFA Europa League",
-    "MLS": "Major League Soccer",   "SA":  "Saudi Pro League",
-    "AL":  "A-League Men",          "JP1": "J1 League",
-    "KR1": "K League 1",            "TH1": "Thai League",
-    "VN1": "V.League 1",            "MY1": "Super League Malaysia",
-    "BE1": "Belgian Pro League",    "SC1": "Scottish Premiership",
-    "PO1": "Primeira Liga",         "NL2": "Eerste Divisie",
-    "BE2": "Challenger Pro League", "FR2": "Ligue 2",
-    "IT2": "Serie B",               "DK1": "Danish Superliga",
-    "C1":  "Swiss Super League",    "A1":  "Austrian Bundesliga",
-    "SE1": "Allsvenskan",           "NO1": "Eliteserien",
-    "PL1": "Ekstraklasa",           "TS1": "Czech First League",
-    "SK1": "Slovak Super Liga",     "UNG1":"Hungarian NB I",
-    "L3":  "3. Liga",               "L2":  "2. Bundesliga",
-    "USAM":"USL Championship",      "MLP": "MLS Next Pro",
+    "GB1": "Premier League",          "GB2": "Championship",
+    "L1":  "Bundesliga",              "L2":  "2. Bundesliga",
+    "L3":  "3. Liga",
+    "IT1": "Serie A",                 "IT2": "Serie B",
+    "FR1": "Ligue 1",                 "FR2": "Ligue 2",
+    "NL1": "Eredivisie",              "NL2": "Eerste Divisie",
+    "ES1": "La Liga",
+    "BE1": "Belgian Pro League",      "BE2": "Challenger Pro League",
+    "SC1": "Scottish Premiership",    "PO1": "Primeira Liga",
+    "DK1": "Danish Superliga",        "C1":  "Swiss Super League",
+    "A1":  "Austrian Bundesliga",
+    "SE1": "Allsvenskan",             "NO1": "Eliteserien",
+    "PL1": "Ekstraklasa",             "TS1": "Czech First League",
+    "SK1": "Slovak Super Liga",       "UNG1":"Hungarian NB I",
+    "CL":  "UEFA Champions League",   "EL":  "UEFA Europa League",
+    "MLS": "Major League Soccer",     "USAM":"USL Championship",
+    "MLP": "MLS Next Pro",
+    "SA":  "Saudi Pro League",        "AL":  "A-League Men",
+    "JP1": "J1 League",              "KR1": "K League 1",
+    "TH1": "Thai League",             "VN1": "V.League 1",
+    "MY1": "Super League Malaysia",
 }
 
 
