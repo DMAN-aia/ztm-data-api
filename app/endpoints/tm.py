@@ -230,23 +230,34 @@ def player_profile(tm_id: str):
     club_tag = soup.select_one("span.data-header__club a")
     club_href = club_tag["href"] if club_tag else None
 
-    # Nationalities — v20 fix (drie fallbacks) bewezen
-    nat_imgs = (
-        soup.select("span.data-header__nationality img") or
-        soup.select("div.data-header__nationality img") or
-        soup.select("img.flaggenrahmen")
+    # Nationalities — alleen header, niet de brede flaggenrahmen fallback
+    nat_container = (
+        soup.select_one("span.data-header__nationality") or
+        soup.select_one("div.data-header__nationality")
     )
-    nationalities = [img.get("title", "") for img in nat_imgs if img.get("title")]
+    if nat_container:
+        nat_imgs = nat_container.find_all("img")
+    else:
+        header = soup.select_one("div.data-header")
+        nat_imgs = header.select("img.flaggenrahmen") if header else []
+    nationalities = list(dict.fromkeys(
+        img.get("title", "") for img in nat_imgs if img.get("title")
+    ))
 
-    # XPath selectors uit felipeall voor specifieke profielvelden
-    dob_el = soup.select_one("span[itemprop='birthDate']")
-    place_els = soup.select("span:-soup-contains('Place of birth') ~ span")
+    # DOB: "Date of birth/Age:" geeft "29/07/1998 (27)" — splits op " ("
+    dob_raw = get_info("Date of birth", "Born")
+    if dob_raw and " (" in dob_raw:
+        date_of_birth = dob_raw.split(" (")[0].strip()
+        age_raw       = dob_raw.split(" (")[1].rstrip(")")
+    else:
+        date_of_birth = dob_raw
+        age_raw       = get_info("Age")
 
     data = {
         "tm_id":                    tm_id,
         "name":                     name,
-        "date_of_birth":            get_info("Date of birth", "Born"),
-        "age":                      get_info("Age"),
+        "date_of_birth":            date_of_birth,
+        "age":                      age_raw,
         "place_of_birth":           get_info("Place of birth", "Birthplace"),
         "nationalities":            nationalities,
         "height":                   get_info("Height"),
@@ -283,30 +294,29 @@ def player_stats(tm_id: str, season_id: str = Query("2024", description="Season 
     rows = []
     for tr in soup.select("table.items tbody tr"):
         tds = tr.find_all("td")
-        if len(tds) < 8:
+        if len(tds) < 6:
             continue
-        # Competition — v20 bewezen selector
-        comp_a    = tr.select_one("td.hauptlink a")
+        # td[0] = wettbewerb logo, td[1] = competition hauptlink, td[2] = club logo, td[3] = club hauptlink
+        # td[4] = appearances, td[5] = goals, td[6] = assists, td[7] = yellow, td[8] = red, td[9] = minutes
+        comp_a    = tds[1].find("a") if len(tds) > 1 else None
         comp_href = comp_a["href"] if comp_a else None
-        # Club — tweede hauptlink link
-        club_links = tr.select("td.hauptlink a")
-        club_a     = club_links[1] if len(club_links) > 1 else None
-        club_href  = club_a["href"] if club_a else None
+        club_a    = tds[3].find("a") if len(tds) > 3 else None
+        club_href = club_a["href"] if club_a else None
 
-        def td(i): return t(tds[i].text) if len(tds) > i else None
+        def td(i): return t(tds[i].get_text(strip=True)) if len(tds) > i else None
 
         rows.append({
             "season":            season_id,
-            "competition":       t(comp_a.text) if comp_a else None,
+            "competition":       t(comp_a.get_text(strip=True)) if comp_a else None,
             "competition_tm_id": extract_id(comp_href, "/wettbewerb/"),
-            "club":              t(club_a.text) if club_a else None,
+            "club":              t(club_a.get_text(strip=True)) if club_a else None,
             "club_tm_id":        extract_id(club_href, "/verein/"),
-            "appearances":       td(3),
-            "goals":             td(4),
-            "assists":           td(5),
-            "minutes":           td(7),
-            "yellow_cards":      td(8) if len(tds) > 8 else None,
-            "red_cards":         td(9) if len(tds) > 9 else None,
+            "appearances":       td(4),
+            "goals":             td(5),
+            "assists":           td(6),
+            "yellow_cards":      td(7),
+            "red_cards":         td(8),
+            "minutes":           td(9),
         })
     rows = [r for r in rows if any(v for k, v in r.items() if k != "season" and v)]
     cache_set(ck, rows)
@@ -421,17 +431,18 @@ def player_suspensions(tm_id: str):
     if cached:
         return ok(cached, "tm", cached=True)
 
-    soup = fetch(f"{TM_BASE}/x/sperrenhistorie/spieler/{tm_id}")
+    soup = fetch(f"{TM_BASE}/x/sperrenhistorie/spieler/{tm_id}/plus/1")
     suspensions = []
     for row in soup.select("table.items tbody tr"):
         tds = row.find_all("td")
         if len(tds) < 3:
             continue
-        comp_a    = row.select_one("a[href*='/wettbewerb/']")
+        comp_a     = row.select_one("a[href*='/wettbewerb/']")
+        comp_href  = comp_a["href"] if comp_a else None
         reason_raw = t(tds[1].text) if len(tds) > 1 else None
         suspensions.append({
             "competition":       t(comp_a.text) if comp_a else None,
-            "competition_tm_id": extract_id(comp_a["href"] if comp_a else None, "/wettbewerb/"),
+            "competition_tm_id": extract_id(comp_href, "/wettbewerb/") if comp_href else None,
             "start_date":        t(tds[2].text) if len(tds) > 2 else None,
             "end_date":          t(tds[3].text) if len(tds) > 3 else None,
             "matches_missed":    t(tds[4].text) if len(tds) > 4 else None,
@@ -459,19 +470,22 @@ def player_national_team(tm_id: str):
         tds = tr.find_all("td")
         if len(tds) < 4:
             continue
-        comp_a    = tr.select_one("td.hauptlink a")
+        # Structuur: td[0]=vlag/logo, td[1]=competition naam, td[2]=season, td[3]=appearances,
+        # td[4]=goals, td[5]=assists, td[6]=minutes
+        comp_a    = tds[1].find("a") if len(tds) > 1 else None
         comp_href = comp_a["href"] if comp_a else None
+        comp_name = t(comp_a.get_text(strip=True)) if comp_a else t(tds[1].get_text(strip=True)) if len(tds) > 1 else None
 
-        def td(i): return t(tds[i].text) if len(tds) > i else None
+        def tdn(i): return t(tds[i].get_text(strip=True)) if len(tds) > i else None
 
         rows.append({
-            "competition":       t(comp_a.text) if comp_a else None,
-            "competition_tm_id": extract_id(comp_href, "/wettbewerb/"),
-            "season":            td(1),
-            "appearances":       td(2),
-            "goals":             td(3),
-            "assists":           td(4),
-            "minutes":           td(5) if len(tds) > 5 else None,
+            "competition":       comp_name,
+            "competition_tm_id": extract_id(comp_href, "/wettbewerb/") if comp_href else None,
+            "season":            tdn(2),
+            "appearances":       tdn(3),
+            "goals":             tdn(4),
+            "assists":           tdn(5),
+            "minutes":           tdn(6),
         })
     rows = [r for r in rows if any(v for v in r.values() if v)]
     cache_set(ck, rows)
@@ -502,11 +516,17 @@ def club_squad(tm_id: str):
         shirt_td = row.select_one("td.rn_nummer")
         mv_raw   = t(mv_td.text) if mv_td else ""
         mv       = clean_market_value(mv_raw)
+        # shirt_number zit in td.rn_nummer (werkt) of als eerste tekst in de rij
+        shirt = t(shirt_td.text) if shirt_td else None
+        # position zit in de tweede tr binnenin td.posrela
+        pos_rows = row.select("td.posrela table tr")
+        pos = t(pos_rows[1].get_text(strip=True)) if len(pos_rows) > 1 else (
+              t(pos_td.get_text(strip=True)) if pos_td else None)
         players.append({
             "player_tm_id":          pid,
             "name":                  clean_name(t(name_a.text)) if name_a else None,
-            "shirt_number":          t(shirt_td.text) if shirt_td else None,
-            "position":              t(pos_td.text) if pos_td else None,
+            "shirt_number":          shirt,
+            "position":              pos,
             "nationality":           nat,
             "market_value":          mv["value"],
             "market_value_currency": mv["currency"],
@@ -600,6 +620,15 @@ def fixtures(
         away_links = [a for a in away_td.find_all("a") if "/verein/" in a.get("href", "")]
         away_a     = away_links[0] if away_links else away_td.find("a")
 
+        def club_name_from_a(a_tag):
+            if not a_tag:
+                return None
+            # Naam zit soms in img alt of title, niet in a.text (a.text = leeg of spaties)
+            img = a_tag.find("img")
+            if img:
+                return t(img.get("alt") or img.get("title") or "")
+            return t(a_tag.get_text(strip=True)) or t(a_tag.get("title", ""))
+
         result_a = result_td.find("a")
         result   = t(result_td.text)
         game_id  = None
@@ -616,9 +645,9 @@ def fixtures(
             "competition_tm_id": lid,
             "season":            "2024",
             "round":             None,
-            "home_team":         t(home_a.text) if home_a else None,
+            "home_team":         club_name_from_a(home_a),
             "home_team_tm_id":   extract_id(home_a["href"] if home_a else None, "/verein/"),
-            "away_team":         t(away_a.text) if away_a else None,
+            "away_team":         club_name_from_a(away_a),
             "away_team_tm_id":   extract_id(away_a["href"] if away_a else None, "/verein/"),
             "home_score":        home_score,
             "away_score":        away_score,
@@ -648,12 +677,13 @@ def match_details(game_id: str):
 
     soup = fetch(f"{TM_BASE}/spielbericht/index/spielbericht/{game_id}")
 
-    # ── Score — felipeall: sb-endstand ─────
+    # ── Score — sb-endstand bevat ook "(0)" voor halftime, alleen digits:digits pakken
     score_el  = soup.find(class_="sb-endstand")
     score_raw = t(score_el.get_text()) if score_el else None
-    score_clean = re.sub(r"\s+", "", score_raw) if score_raw else None
-    home_score = score_clean.split(":")[0] if score_clean and ":" in score_clean else None
-    away_score = score_clean.split(":")[1] if score_clean and ":" in score_clean else None
+    # Haal alleen het eindstand gedeelte: "0:0" of "2:1" — strip alles na spatie/haakje
+    score_match = re.search(r"(\d+)\s*:\s*(\d+)", score_raw) if score_raw else None
+    home_score = score_match.group(1) if score_match else None
+    away_score = score_match.group(2) if score_match else None
 
     # ── Teams — felipeall: sb-team + /verein/ ─────
     club_ids, club_names = [], []
@@ -695,9 +725,19 @@ def match_details(game_id: str):
         if a:
             referee = t(a.get_text())
 
-    # Stadion, attendance uit header
-    stadium    = find_label("Stadium|Stadion")
-    attendance = find_label("Attendance|Zuschauer")
+    # Stadion en attendance — zitten in sb-zusatzinfos of soortgelijke li/p blokken
+    # Zoek specifiek op labels, NIET via find_next want dat pakt de referee
+    stadium    = None
+    attendance = None
+    for li in soup.select("p.sb-zusatzinfos, li"):
+        txt = li.get_text(" ", strip=True)
+        if re.search(r"Stadium|Stadion", txt, re.IGNORECASE):
+            # Waarde is de tekst na de dubbele punt of in de a-tag
+            a = li.find("a")
+            stadium = t(a.get_text()) if a else re.sub(r".*?:\s*", "", txt).strip()
+        elif re.search(r"Attendance|Zuschauer", txt, re.IGNORECASE):
+            nums = re.search(r"[\d,\.]+", txt)
+            attendance = nums.group().replace(",", "") if nums else None
 
     meta = {
         "game_id":           game_id,
@@ -716,11 +756,10 @@ def match_details(game_id: str):
         "away_team_tm_id":   away_tm_id,
         "home_score":        home_score,
         "away_score":        away_score,
-        "status":            parse_status(score_clean or ""),
+        "status":            parse_status(f"{home_score}:{away_score}" if home_score else ""),
     }
 
-    # ── Goals — felipeall bewezen selectors ─────
-    # sb-aktion-spielstand = score indicator = echte goal (niet kaart/wissel)
+    # ── Goals — sb-aktion-spielstand aanwezig = echte goal
     goals = []
     for side_class, club_name, club_tm_id in [
         ("sb-aktion-heim", home_name, home_tm_id),
@@ -731,17 +770,26 @@ def match_details(game_id: str):
             if not score_div or not score_div.get_text(strip=True):
                 continue
             try:
-                links = row.find_all("a", href=lambda h: h and "leistungsdaten" in h)
+                links = row.find_all("a", href=lambda h: h and "/spieler/" in h)
                 scorer_a  = links[0] if links else None
                 assist_a  = links[1] if len(links) > 1 else None
-                minute_el = row.find(class_="sb-sprite-uhr-klein") or row.find(class_=re.compile("uhr"))
-                type_el   = row.find("span", class_=re.compile("sb-aktion-icon|icon"))
+                # Minuut: zoek in alle tekst van de rij naar "45'" patroon
+                minute = None
+                for el in row.find_all(string=re.compile(r"\d+'\s*$|\d+\+\d+'")):
+                    minute = t(el)
+                    break
+                if not minute:
+                    # Alternatief: eerste tekst-node die alleen cijfers en ' bevat
+                    raw_txt = row.get_text(" ", strip=True)
+                    m = re.search(r"(\d+(?:\+\d+)?)'", raw_txt)
+                    minute = m.group(0) if m else None
+                type_el   = row.find("span", class_=re.compile(r"sb-aktion-icon|icon"))
                 type_text = t(type_el.get("title", "")) if type_el else ""
                 goals.append({
-                    "minute":       t(minute_el.text) if minute_el else None,
-                    "scorer_name":  t(scorer_a.text) if scorer_a else None,
+                    "minute":       minute,
+                    "scorer_name":  t(scorer_a.get_text(strip=True)) if scorer_a else None,
                     "scorer_tm_id": re.search(r"/spieler/(\d+)", scorer_a["href"]).group(1) if scorer_a else None,
-                    "assist_name":  t(assist_a.text) if assist_a else None,
+                    "assist_name":  t(assist_a.get_text(strip=True)) if assist_a else None,
                     "assist_tm_id": re.search(r"/spieler/(\d+)", assist_a["href"]).group(1) if assist_a else None,
                     "assist_type":  _classify_assist(type_text),
                     "goal_type":    _classify_goal(type_text),
@@ -758,18 +806,19 @@ def match_details(game_id: str):
         ("sb-aktion-gast", away_name, away_tm_id),
     ]:
         for row in soup.find_all(class_=side_class):
-            # Kaarten hebben geen sb-aktion-spielstand maar wel een kaart icon
-            card_icon = row.find("span", class_=re.compile("gelb|rot|karte|card"))
+            card_icon = row.find("span", class_=re.compile(r"gelb|rot|karte|card"))
             if not card_icon:
                 continue
             player_a  = row.find("a", href=lambda h: h and "/spieler/" in h)
-            minute_el = row.find(class_="sb-sprite-uhr-klein") or row.find(class_=re.compile("uhr"))
-            icon_title = t(card_icon.get("title", "")) or t(card_icon.get("class", [""])[0])
+            raw_txt   = row.get_text(" ", strip=True)
+            m = re.search(r"(\d+(?:\+\d+)?)'", raw_txt)
+            minute = m.group(0) if m else None
+            icon_classes = " ".join(card_icon.get("class", []))
             cards.append({
-                "minute":       t(minute_el.text) if minute_el else None,
-                "player_name":  t(player_a.text) if player_a else None,
+                "minute":       minute,
+                "player_name":  t(player_a.get_text(strip=True)) if player_a else None,
                 "player_tm_id": re.search(r"/spieler/(\d+)", player_a["href"]).group(1) if player_a else None,
-                "card_type":    _classify_card(icon_title),
+                "card_type":    _classify_card(icon_classes),
                 "club":         club_name,
                 "club_tm_id":   club_tm_id,
             })
@@ -819,19 +868,20 @@ def match_details(game_id: str):
         ("sb-aktion-gast", away_name, away_tm_id),
     ]:
         for row in soup.find_all(class_=side_class):
-            # Wissels hebben pijl-icon
-            wechsel = row.find(class_=re.compile("wechsel|sub|arrow"))
+            wechsel = row.find(class_=re.compile(r"wechsel|sub|arrow|pfeil"))
             if not wechsel:
                 continue
             player_links = row.find_all("a", href=lambda h: h and "/spieler/" in h)
             out_a = player_links[0] if len(player_links) > 0 else None
             in_a  = player_links[1] if len(player_links) > 1 else None
-            minute_el = row.find(class_="sb-sprite-uhr-klein") or row.find(class_=re.compile("uhr"))
+            raw_txt = row.get_text(" ", strip=True)
+            m = re.search(r"(\d+(?:\+\d+)?)'", raw_txt)
+            minute = m.group(0) if m else None
             substitutions.append({
-                "minute":           t(minute_el.text) if minute_el else None,
-                "player_out_name":  t(out_a.text) if out_a else None,
+                "minute":           minute,
+                "player_out_name":  t(out_a.get_text(strip=True)) if out_a else None,
                 "player_out_tm_id": re.search(r"/spieler/(\d+)", out_a["href"]).group(1) if out_a else None,
-                "player_in_name":   t(in_a.text) if in_a else None,
+                "player_in_name":   t(in_a.get_text(strip=True)) if in_a else None,
                 "player_in_tm_id":  re.search(r"/spieler/(\d+)", in_a["href"]).group(1) if in_a else None,
                 "club":             club_name,
                 "club_tm_id":       club_tm_id,
