@@ -714,21 +714,35 @@ def match_details(game_id: str):
     home_name  = club_names[0] if club_names else None
     away_name  = club_names[1] if len(club_names) > 1 else None
 
-    # ── Competition / round ─────
-    comp_a = soup.select_one("a.sb-wettbewerb")
+    # ── Competition / season / round / kickoff uit .sb-spieldaten ─────
+    competition       = None
+    competition_tm_id = None
+    season            = None
+    round_            = None
+    kickoff_datetime  = None
 
-    # ── Info velden (stadion, referee, datum) ─────
-    def find_label(keyword: str):
-        el = soup.find(string=re.compile(keyword, re.IGNORECASE))
-        if not el:
-            return None
-        parent = el.find_parent()
-        if not parent:
-            return None
-        nxt = parent.find_next("a") or parent.find_next("span")
-        return t(nxt.text) if nxt else None
+    spieldaten = soup.select_one(".sb-spieldaten")
+    if spieldaten:
+        spieltag_a = spieldaten.find("a", href=re.compile(r"/spieltag/\d+$"))
+        if spieltag_a:
+            href = spieltag_a["href"]
+            m_comp   = re.search(r"/wettbewerb/([^/]+)", href)
+            m_season = re.search(r"/saison_id/(\d+)", href)
+            m_round  = re.search(r"/spieltag/(\d+)$", href)
+            if m_comp:   competition_tm_id = m_comp.group(1)
+            if m_season: season            = m_season.group(1)
+            if m_round:  round_            = m_round.group(1)
+        comp_href_a = spieldaten.find("a", href=re.compile(r"/wettbewerb/"))
+        if comp_href_a:
+            competition = t(comp_href_a.get_text())
+        datum_p = spieldaten.select_one(".sb-datum")
+        if datum_p:
+            raw = datum_p.get_text(" ", strip=True)
+            raw = re.sub(r"\d+\.\s*Matchday\s*\|?\s*", "", raw).strip(" |")
+            raw = re.sub(r"\s*\|\s*", " ", raw).strip()
+            kickoff_datetime = raw if raw else None
 
-    # Referee — felipeall bewezen
+    # ── Referee ─────
     referee = None
     ref_label = soup.find(string="Referee:")
     if ref_label:
@@ -736,27 +750,25 @@ def match_details(game_id: str):
         if a:
             referee = t(a.get_text())
 
-    # Stadion en attendance — zitten in sb-zusatzinfos of soortgelijke li/p blokken
-    # Zoek specifiek op labels, NIET via find_next want dat pakt de referee
+    # ── Stadion + attendance ─────
     stadium    = None
     attendance = None
-    for li in soup.select("p.sb-zusatzinfos, li"):
-        txt = li.get_text(" ", strip=True)
-        if re.search(r"Stadium|Stadion", txt, re.IGNORECASE):
-            # Waarde is de tekst na de dubbele punt of in de a-tag
-            a = li.find("a")
-            stadium = t(a.get_text()) if a else re.sub(r".*?:\s*", "", txt).strip()
-        elif re.search(r"Attendance|Zuschauer", txt, re.IGNORECASE):
-            nums = re.search(r"[\d,\.]+", txt)
-            attendance = nums.group().replace(",", "") if nums else None
+    zusatz = soup.select_one("p.sb-zusatzinfos")
+    if zusatz:
+        stad_a = zusatz.find("a")
+        if stad_a:
+            stadium = t(stad_a.get_text())
+        m_att = re.search(r"Attendance:\s*([\d\.,]+)", zusatz.get_text(" ", strip=True))
+        if m_att:
+            attendance = re.sub(r"[^\d]", "", m_att.group(1))
 
     meta = {
         "game_id":           game_id,
-        "competition":       t(comp_a.text) if comp_a else None,
-        "competition_tm_id": extract_id(comp_a["href"] if comp_a else None, "/wettbewerb/"),
-        "season":            None,
-        "round":             None,
-        "kickoff_datetime":  None,
+        "competition":       competition,
+        "competition_tm_id": competition_tm_id,
+        "season":            season,
+        "round":             round_,
+        "kickoff_datetime":  kickoff_datetime,
         "stadium":           stadium,
         "city":              None,
         "attendance":        attendance,
@@ -871,14 +883,17 @@ def match_details(game_id: str):
     for i, container in enumerate(all_players_el[:22]):
         a = container.find("a", href=lambda h: h and "/spieler/" in h)
         pid = re.search(r"/spieler/(\d+)", a["href"]).group(1) if a else None
-        name = re.sub(r"^\d+", "", t(container.get_text())).strip()
+        raw_text = t(container.get_text())
+        shirt_m = re.match(r"^(\d+)", raw_text)
+        shirt_number = shirt_m.group(1) if shirt_m else None
+        name = re.sub(r"^\d+", "", raw_text).strip()
         is_home = i < 11
         lineups.append({
             "player_name":  name,
             "player_tm_id": pid,
             "club_tm_id":   home_tm_id if is_home else away_tm_id,
             "position":     None,
-            "shirt_number": None,
+            "shirt_number": shirt_number,
             "is_starting":  True,
             "is_captain":   False,
         })
