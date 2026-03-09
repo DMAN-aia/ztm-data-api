@@ -1080,12 +1080,40 @@ def debug_match(game_id: str):
             "raw_html": str(row)[:600],
         }
 
+    # Meta HTML fragmenten
+    meta_snippets = {}
+    for sel, label in [
+        ("a.sb-wettbewerb", "comp_a"),
+        (".sb-spieldaten", "spieldaten"),
+        (".sb-zusatzinfos", "zusatzinfos"),
+        (".sb-datum", "datum"),
+        ("p.sb-zusatzinfos", "p_zusatzinfos"),
+        (".box-header", "box_header"),
+        (".content-box-headline", "content_box_headline"),
+    ]:
+        el = soup.select_one(sel)
+        meta_snippets[label] = str(el)[:400] if el else None
+
+    matchday_texts = []
+    for el in soup.find_all(string=re.compile(r"Matchday|Spieltag|Round|Runde", re.IGNORECASE)):
+        matchday_texts.append({"text": el.strip(), "parent": str(el.parent)[:200]})
+
+    shirt_snippets = []
+    for el in soup.select("table.aufstellung-spieler-column td"):
+        shirt_snippets.append(str(el)[:150])
+        if len(shirt_snippets) >= 6:
+            break
+
     return {
         "heim_count": len(heim_rows),
         "gast_count": len(gast_rows),
         "heim_rows": [row_info(r) for r in heim_rows[:8]],
         "gast_rows": [row_info(r) for r in gast_rows[:8]],
+        "meta_snippets": meta_snippets,
+        "matchday_texts": matchday_texts[:10],
+        "shirt_number_snippets": shirt_snippets,
     }
+
 
 
 @router.get("/debug/stats/{tm_id}")
