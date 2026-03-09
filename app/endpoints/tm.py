@@ -778,39 +778,70 @@ def match_details(game_id: str):
     cards = []
     substitutions = []
 
+    def _name(a):
+        return t(a.get("title") or a.get_text(strip=True)) if a else None
+
+    def _pid(a):
+        m = re.search(r"/spieler/(\d+)", a["href"]) if a else None
+        return m.group(1) if m else None
+
+    def _decode_minute(inner):
+        # Minuut staat als tekst in sb-aktion-aktion voor goals/cards: "..., 45'"
+        aktion_div = inner.find(class_="sb-aktion-aktion")
+        if aktion_div:
+            raw = aktion_div.get_text(" ", strip=True)
+            m = re.search(r"(\d+(?:\+\d+)?)'", raw)
+            if m:
+                return m.group(0)
+        # Fallback: sb-sprite-uhr-klein background-position
+        # Sprite: x = -36px * minuut (minuut 1 = -36px, minuut 2 = -72px etc)
+        uhr = inner.find(class_="sb-sprite-uhr-klein")
+        if uhr:
+            style = uhr.get("style", "")
+            m = re.search(r"background-position:\s*(-?\d+)px\s+(-?\d+)px", style)
+            if m:
+                x = abs(int(m.group(1)))
+                minute_num = x // 36
+                if minute_num > 0:
+                    return f"{minute_num}'"
+        return None
+
     for side, club_name, club_tm_id in [
         ("heim", home_name, home_tm_id),
         ("gast", away_name, away_tm_id),
     ]:
         for outer in soup.find_all(class_=f"sb-aktion-{side}"):
-            # Echte content zit in .sb-aktion binnen de outer div
             inner = outer.find(class_="sb-aktion") or outer
-
-            # Spelersnaam + TM ID via a.wichtig (staat in .sb-aktion-aktion)
             aktion_div = inner.find(class_="sb-aktion-aktion")
+            minute = _decode_minute(inner)
+
+            # Wissel: heeft sb-aktion-wechsel-ein / sb-aktion-wechsel-aus
+            wechsel_ein = inner.find(class_="sb-aktion-wechsel-ein")
+            wechsel_aus = inner.find(class_="sb-aktion-wechsel-aus")
+            if wechsel_ein or wechsel_aus:
+                in_a  = wechsel_ein.find("a", class_="wichtig") if wechsel_ein else None
+                out_a = wechsel_aus.find("a", class_="wichtig") if wechsel_aus else None
+                substitutions.append({
+                    "minute":           minute,
+                    "player_in_name":   _name(in_a),
+                    "player_in_tm_id":  _pid(in_a),
+                    "player_out_name":  _name(out_a),
+                    "player_out_tm_id": _pid(out_a),
+                    "club":             club_name,
+                    "club_tm_id":       club_tm_id,
+                })
+                continue
+
             wichtig_links = aktion_div.find_all("a", class_="wichtig") if aktion_div else []
 
-            def _name(a):
-                return t(a.get("title") or a.get_text(strip=True)) if a else None
-
-            def _pid(a):
-                m = re.search(r"/spieler/(\d+)", a["href"]) if a else None
-                return m.group(1) if m else None
-
-            # Minuut staat als laatste tekst in aktion_div: "..., 45+2'"
-            minute = None
-            if aktion_div:
-                raw = aktion_div.get_text(" ", strip=True)
-                m_min = re.search(r"(\d+(?:\+\d+)?)'", raw)
-                minute = m_min.group(0) if m_min else None
-
-            # Goal: heeft .sb-aktion-spielstand met score
+            # Goal: sb-aktion-spielstand zonder hide-for-small = echte score
             score_div = inner.find(class_="sb-aktion-spielstand")
-            if score_div and score_div.get_text(strip=True):
+            score_classes = score_div.get("class", []) if score_div else []
+            if score_div and "hide-for-small" not in score_classes and score_div.get_text(strip=True):
                 try:
-                    scorer_a = wichtig_links[0] if wichtig_links else None
-                    assist_a = wichtig_links[1] if len(wichtig_links) > 1 else None
-                    type_el  = inner.find("span", class_=re.compile(r"sb-aktion-icon|icon"))
+                    scorer_a  = wichtig_links[0] if wichtig_links else None
+                    assist_a  = wichtig_links[1] if len(wichtig_links) > 1 else None
+                    type_el   = inner.find("span", class_=re.compile(r"sb-aktion-icon|icon"))
                     type_text = t(type_el.get("title", "")) if type_el else ""
                     goals.append({
                         "minute":       minute,
@@ -827,24 +858,8 @@ def match_details(game_id: str):
                     pass
                 continue
 
-            # Wissel: heeft wechsel/auswechslung icon
-            wechsel = inner.find(class_=re.compile(r"wechsel|auswechslung|pfeil|arrow"))
-            if wechsel:
-                out_a = wichtig_links[0] if wichtig_links else None
-                in_a  = wichtig_links[1] if len(wichtig_links) > 1 else None
-                substitutions.append({
-                    "minute":           minute,
-                    "player_out_name":  _name(out_a),
-                    "player_out_tm_id": _pid(out_a),
-                    "player_in_name":   _name(in_a),
-                    "player_in_tm_id":  _pid(in_a),
-                    "club":             club_name,
-                    "club_tm_id":       club_tm_id,
-                })
-                continue
-
-            # Kaart: heeft gelb/rot span
-            card_icon = inner.find("span", class_=re.compile(r"gelb|rot|karte|card"))
+            # Kaart: heeft sb-sprite sb-gelb / sb-rot
+            card_icon = inner.find("span", class_=re.compile(r"sb-gelb|sb-rot|gelb|rot"))
             if card_icon:
                 player_a = wichtig_links[0] if wichtig_links else None
                 icon_classes = " ".join(card_icon.get("class", []))
