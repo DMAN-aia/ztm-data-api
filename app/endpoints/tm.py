@@ -1,5 +1,5 @@
 """
-Transfermarkt endpoints — ZTM Data API v36
+Transfermarkt endpoints — ZTM Data API v37
 Basis: v20 (getest, werkend). Delta: nieuwe velden op bestaande endpoints + 6 nieuwe endpoints.
 
 Endpoints (bestaand, uitgebreid):
@@ -87,6 +87,9 @@ COMP_SLUG = {
     "MLS": ("major-league-soccer",     "MLS"),
     "USAM":("usl-championship",        "USAM"),
     "MLP": ("mls-next-pro",            "MLP"),
+    "ECL": ("uefa-conference-league",  "ECL"),
+    "TR1": ("super-lig",                 "TR1"),
+    "ES2": ("laliga2",                   "ES2"),
 }
 
 COMPETITIONS_METADATA = [
@@ -128,6 +131,9 @@ COMPETITIONS_METADATA = [
     {"competition_tm_id": "L3",   "competition_name": "3. Liga",                 "country": "Germany",      "tier": 3},
     {"competition_tm_id": "USAM", "competition_name": "USL Championship",        "country": "USA",          "tier": 2},
     {"competition_tm_id": "MLP",  "competition_name": "MLS Next Pro",            "country": "USA",          "tier": 2},
+    {"competition_tm_id": "ECL",  "competition_name": "UEFA Conference League",  "country": "Europe",       "tier": 0},
+    {"competition_tm_id": "TR1",  "competition_name": "Süper Lig",               "country": "Turkey",       "tier": 1},
+    {"competition_tm_id": "ES2",  "competition_name": "La Liga 2",               "country": "Spain",        "tier": 2},
 ]
 
 
@@ -154,6 +160,9 @@ COMP_NAMES = {
     "JP1": "J1 League",              "KR1": "K League 1",
     "TH1": "Thai League",             "VN1": "V.League 1",
     "MY1": "Super League Malaysia",
+    "ECL": "UEFA Conference League",
+    "TR1": "Süper Lig",
+    "ES2": "La Liga 2",
 }
 
 
