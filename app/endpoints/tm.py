@@ -1,5 +1,4 @@
 import re
-import json
 import time
 import random
 from datetime import datetime
@@ -18,17 +17,15 @@ TM_CEAPI = "https://www.transfermarkt.com/ceapi"
 
 TTL_PROFILE = 86400
 TTL_LIVE = 3600
-TTL_MV = 43200
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.transfermarkt.com/",
 }
 
 
 def fetch(url: str):
-    time.sleep(random.uniform(1.5, 3))
+    time.sleep(random.uniform(1, 2))
     r = requests.get(url, headers=HEADERS, timeout=20)
 
     if r.status_code == 403:
@@ -54,26 +51,18 @@ def extract_id(href: str, segment: str):
         return None
 
 
-def t(s):
-    return s.strip() if s else None
-
-
 def now_iso():
     return datetime.utcnow().isoformat() + "Z"
 
 
-def clean_market_value(raw: str):
+def clean_name(name: str):
+    if not name:
+        return None
 
-    m = re.search(r"([€$£])([0-9,.]+)([mk]?)", raw or "", re.I)
+    name = re.sub(r"#\d+", "", name)
+    name = re.sub(r"\s+", " ", name)
 
-    if not m:
-        return {"value": None, "currency": None, "unit": None}
-
-    return {
-        "currency": m.group(1),
-        "value": float(m.group(2).replace(",", "")),
-        "unit": m.group(3).lower() or "unit",
-    }
+    return name.strip()
 
 
 # ------------------------------------------------
@@ -83,7 +72,8 @@ def clean_market_value(raw: str):
 @router.get("/player/{tm_id}")
 def player_profile(tm_id: str):
 
-    ck = cache_key("tm", "profile_v22", id=tm_id)
+    ck = cache_key("tm", "profile_v23", id=tm_id)
+
     cached = cache_get(ck, TTL_PROFILE)
 
     if cached:
@@ -92,16 +82,16 @@ def player_profile(tm_id: str):
     soup = fetch(f"{TM_BASE}/-/profil/spieler/{tm_id}")
 
     name_tag = soup.find("h1")
-    name = name_tag.text.strip() if name_tag else None
+    name = clean_name(name_tag.text if name_tag else None)
 
     club_tag = soup.select_one("span.data-header__club a")
     club_href = club_tag["href"] if club_tag else None
 
-    nationalities = [
+    nationalities = list(dict.fromkeys(
         img.get("title")
         for img in soup.select("img.flaggenrahmen")
         if img.get("title")
-    ]
+    ))
 
     data = {
         "tm_id": tm_id,
@@ -125,6 +115,7 @@ def player_profile(tm_id: str):
 def player_stats(tm_id: str, season_id: str = Query("2025")):
 
     ck = cache_key("tm", "stats_v22", id=tm_id, season=season_id)
+
     cached = cache_get(ck, TTL_PROFILE)
 
     if cached:
@@ -165,6 +156,7 @@ def player_stats(tm_id: str, season_id: str = Query("2025")):
 def player_transfers(tm_id: str):
 
     ck = cache_key("tm", "transfers_v22", id=tm_id)
+
     cached = cache_get(ck, TTL_PROFILE)
 
     if cached:
@@ -196,6 +188,7 @@ def player_transfers(tm_id: str):
 def club_squad(tm_id: str):
 
     ck = cache_key("tm", "squad_v22", id=tm_id)
+
     cached = cache_get(ck, TTL_PROFILE)
 
     if cached:
@@ -216,7 +209,7 @@ def club_squad(tm_id: str):
 
         players.append({
             "player_tm_id": extract_id(href, "/spieler/"),
-            "name": name_a.text.strip(),
+            "name": clean_name(name_a.text),
         })
 
     cache_set(ck, players)
