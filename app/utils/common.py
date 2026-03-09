@@ -7,43 +7,8 @@ import json
 import hashlib
 import time
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Optional
-
-# ─────────────────────────────────────────
-# LEAGUE MAPS
-# ─────────────────────────────────────────
-
-# Legacy league map (retained for reference)
-SOCCERDATA_LEAGUES = {
-    "GB1":  "ENG-Premier League",
-    "GB2":  "ENG-Championship",
-    "L1":   "DEU-Bundesliga",
-    "IT1":  "ITA-Serie A",
-    "FR1":  "FRA-Ligue 1",
-    "NL1":  "NLD-Eredivisie",
-    "ES1":  "ESP-La Liga",
-    "CL":   "INT-UEFA Champions League",
-    "EL":   "INT-UEFA Europa League",
-    "MLS":  "USA-Major League Soccer",
-    "JP1":  "JPN-J1 League",
-    "KR1":  "KOR-K League 1",
-    "TH1":  "THA-Thai League 1",
-    "VN1":  "VNM-V.League 1",
-    "MY1":  "MYS-Super League",
-    "SA":   "SAU-Saudi Pro League",
-    "AL":   "AUS-A-League Men",
-}
-
-# Understat only supports these leagues
-UNDERSTAT_LEAGUES = {
-    "GB1": "EPL",
-    "L1":  "Bundesliga",
-    "IT1": "Serie_A",
-    "FR1": "Ligue_1",
-    "ES1": "La_Liga",
-    "RU1": "RFPL",
-}
 
 # ─────────────────────────────────────────
 # SIMPLE FILE CACHE
@@ -90,18 +55,3 @@ def ok(data: Any, source: str, cached: bool = False) -> dict:
         "data": data,
     }
 
-def err(message: str, source: str, status_code: int = 500) -> dict:
-    return {
-        "status": "error",
-        "source": source,
-        "message": message,
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    }
-
-# ─────────────────────────────────────────
-# LEAGUE VALIDATION
-# ─────────────────────────────────────────
-
-def resolve_league(league_id: str, league_map: dict) -> Optional[str]:
-    """Resolve our internal league code to a source-specific string."""
-    return league_map.get(league_id.upper())
