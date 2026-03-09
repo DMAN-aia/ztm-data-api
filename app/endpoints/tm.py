@@ -903,32 +903,6 @@ def match_details(game_id: str):
                 "is_captain":   False,
             })
 
-    # ── Substitutions ─────
-    substitutions = []
-    for side_class, club_name, club_tm_id in [
-        ("sb-aktion-heim", home_name, home_tm_id),
-        ("sb-aktion-gast", away_name, away_tm_id),
-    ]:
-        for row in soup.find_all(class_=side_class):
-            wechsel = row.find(class_=re.compile(r"wechsel|sub|arrow|pfeil"))
-            if not wechsel:
-                continue
-            player_links = row.find_all("a", href=lambda h: h and "/spieler/" in h)
-            out_a = player_links[0] if len(player_links) > 0 else None
-            in_a  = player_links[1] if len(player_links) > 1 else None
-            raw_txt = row.get_text(" ", strip=True)
-            m = re.search(r"(\d+(?:\+\d+)?)'", raw_txt)
-            minute = m.group(0) if m else None
-            substitutions.append({
-                "minute":           minute,
-                "player_out_name":  t(out_a.get_text(strip=True)) if out_a else None,
-                "player_out_tm_id": re.search(r"/spieler/(\d+)", out_a["href"]).group(1) if out_a else None,
-                "player_in_name":   t(in_a.get_text(strip=True)) if in_a else None,
-                "player_in_tm_id":  re.search(r"/spieler/(\d+)", in_a["href"]).group(1) if in_a else None,
-                "club":             club_name,
-                "club_tm_id":       club_tm_id,
-            })
-
     # ── Player match stats (afgeleid uit lineups + subs + goals + cards) ─────
     pm: dict[str, dict] = {}
     for p in lineups:
