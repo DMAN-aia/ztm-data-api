@@ -1,5 +1,5 @@
 """
-Transfermarkt endpoints — ZTM Data API v22
+Transfermarkt endpoints — ZTM Data API v34
 Basis: v20 (getest, werkend). Delta: nieuwe velden op bestaande endpoints + 6 nieuwe endpoints.
 
 Endpoints (bestaand, uitgebreid):
@@ -64,6 +64,8 @@ COMP_SLUG = {
     "TH1": ("thai-league",           "TH1"),
     "VN1": ("v-league-1",            "VN1"),
     "MY1": ("super-league-malaysia", "MY1"),
+    "BE1": ("jupiler-pro-league",    "BE1"),
+    "SC1": ("scottish-premiership",   "SC1"),
 }
 
 COMPETITIONS_METADATA = [
@@ -84,7 +86,26 @@ COMPETITIONS_METADATA = [
     {"competition_tm_id": "TH1", "competition_name": "Thai League",           "country": "Thailand",     "tier": 1},
     {"competition_tm_id": "VN1", "competition_name": "V.League 1",            "country": "Vietnam",      "tier": 1},
     {"competition_tm_id": "MY1", "competition_name": "Super League Malaysia", "country": "Malaysia",     "tier": 1},
+    {"competition_tm_id": "BE1", "competition_name": "Belgian Pro League",    "country": "Belgium",      "tier": 1},
+    {"competition_tm_id": "SC1", "competition_name": "Scottish Premiership",   "country": "Scotland",     "tier": 1},
 ]
+
+
+# competition_tm_id → display naam (voor match meta)
+COMP_NAMES = {
+    "GB1": "Premier League",        "GB2": "Championship",
+    "L1":  "Bundesliga",            "L2":  "2. Bundesliga",
+    "IT1": "Serie A",               "IT2": "Serie B",
+    "FR1": "Ligue 1",               "FR2": "Ligue 2",
+    "NL1": "Eredivisie",            "ES1": "La Liga",
+    "CL":  "UEFA Champions League", "EL":  "UEFA Europa League",
+    "MLS": "Major League Soccer",   "SA":  "Saudi Pro League",
+    "AL":  "A-League Men",          "JP1": "J1 League",
+    "KR1": "K League 1",            "TH1": "Thai League",
+    "VN1": "V.League 1",            "MY1": "Super League Malaysia",
+    "BE1": "Belgian Pro League",    "SC1": "Scottish Premiership",
+    "PO1": "Primeira Liga",         "AUS1":"A-League Men",
+}
 
 
 # ─────────────────────────────────────────
@@ -732,9 +753,12 @@ def match_details(game_id: str):
             if m_comp:   competition_tm_id = m_comp.group(1)
             if m_season: season            = m_season.group(1)
             if m_round:  round_            = m_round.group(1)
-        comp_href_a = spieldaten.find("a", href=re.compile(r"/wettbewerb/"))
-        if comp_href_a:
-            competition = t(comp_href_a.get_text())
+        if competition_tm_id and competition_tm_id in COMP_NAMES:
+            competition = COMP_NAMES[competition_tm_id]
+        else:
+            comp_href_a = spieldaten.find("a", href=re.compile(r"/wettbewerb/"))
+            if comp_href_a:
+                competition = t(comp_href_a.get_text())
         datum_p = spieldaten.select_one(".sb-datum")
         if datum_p:
             raw = datum_p.get_text(" ", strip=True)
@@ -1062,103 +1086,3 @@ def clubs(comp_id: str = Query(..., description="Competition TM ID bijv. GB1")):
     cache_set(ck, clubs_out)
     return ok(clubs_out, "tm")
 
-
-# ─────────────────────────────────────────
-# DEBUG ENDPOINTS — tijdelijk voor HTML inspectie
-# ─────────────────────────────────────────
-
-@router.get("/debug/match/{game_id}")
-def debug_match(game_id: str):
-    """Geeft ruwe HTML-fragmenten van match events terug voor selector debugging."""
-    soup = fetch(f"{TM_BASE}/spielbericht/index/spielbericht/{game_id}")
-    heim_rows = soup.find_all(class_="sb-aktion-heim")
-    gast_rows = soup.find_all(class_="sb-aktion-gast")
-
-    def row_info(row):
-        inner = row.find(class_="sb-aktion") or row
-        classes = [el.get("class", []) for el in inner.find_all(class_=True)]
-        all_classes = []
-        for cl in classes:
-            all_classes.extend(cl if isinstance(cl, list) else [cl])
-        wichtig = [{"text": a.get_text(strip=True), "title": a.get("title"), "href": a.get("href")}
-                   for a in inner.find_all("a", class_="wichtig")]
-        aktion_text = inner.find(class_="sb-aktion-aktion")
-        score_div = inner.find(class_="sb-aktion-spielstand")
-        uhr = inner.find(class_="sb-sprite-uhr-klein")
-        return {
-            "all_classes": list(set(all_classes)),
-            "score_text": score_div.get_text(strip=True) if score_div else None,
-            "score_classes": score_div.get("class") if score_div else None,
-            "wichtig_links": wichtig,
-            "aktion_text": aktion_text.get_text(" ", strip=True)[:200] if aktion_text else None,
-            "uhr_style": uhr.get("style") if uhr else None,
-            "raw_html": str(row)[:600],
-        }
-
-    # Meta HTML fragmenten
-    meta_snippets = {}
-    for sel, label in [
-        ("a.sb-wettbewerb", "comp_a"),
-        (".sb-spieldaten", "spieldaten"),
-        (".sb-zusatzinfos", "zusatzinfos"),
-        (".sb-datum", "datum"),
-        ("p.sb-zusatzinfos", "p_zusatzinfos"),
-        (".box-header", "box_header"),
-        (".content-box-headline", "content_box_headline"),
-    ]:
-        el = soup.select_one(sel)
-        meta_snippets[label] = str(el)[:400] if el else None
-
-    matchday_texts = []
-    for el in soup.find_all(string=re.compile(r"Matchday|Spieltag|Round|Runde", re.IGNORECASE)):
-        matchday_texts.append({"text": el.strip(), "parent": str(el.parent)[:200]})
-
-    shirt_snippets = []
-    for el in soup.select("table.aufstellung-spieler-column td"):
-        shirt_snippets.append(str(el)[:150])
-        if len(shirt_snippets) >= 6:
-            break
-
-    return {
-        "heim_count": len(heim_rows),
-        "gast_count": len(gast_rows),
-        "heim_rows": [row_info(r) for r in heim_rows[:8]],
-        "gast_rows": [row_info(r) for r in gast_rows[:8]],
-        "meta_snippets": meta_snippets,
-        "matchday_texts": matchday_texts[:10],
-        "shirt_number_snippets": shirt_snippets,
-    }
-
-
-
-@router.get("/debug/stats/{tm_id}")
-def debug_stats(tm_id: str, season_id: str = Query("2025")):
-    """Geeft ruwe tabelrijen terug van leistungsdaten voor selector debugging."""
-    soup = fetch(f"{TM_BASE}/x/leistungsdaten/spieler/{tm_id}/plus/0?saison={season_id}")
-    rows = []
-    for i, tr in enumerate(soup.select("table.items tbody tr")[:10]):
-        tds = tr.find_all("td")
-        rows.append({
-            "row_index": i,
-            "td_count": len(tds),
-            "tds": [{"index": j, "text": t(td.get_text(strip=True))[:40], "classes": td.get("class")}
-                    for j, td in enumerate(tds)],
-        })
-    return {"season_id": season_id, "rows": rows}
-
-
-@router.get("/debug/national-team/{tm_id}")
-def debug_national_team(tm_id: str):
-    """Geeft ruwe tabelrijen terug van nationalmannschaft voor selector debugging."""
-    soup = fetch(f"{TM_BASE}/x/nationalmannschaft/spieler/{tm_id}")
-    rows = []
-    for i, tr in enumerate(soup.select("table.items tbody tr")[:10]):
-        tds = tr.find_all("td")
-        rows.append({
-            "row_index": i,
-            "td_count": len(tds),
-            "tds": [{"index": j, "text": t(td.get_text(strip=True))[:40],
-                     "links": [{"text": a.get_text(strip=True), "href": a.get("href")} for a in td.find_all("a")]}
-                    for j, td in enumerate(tds)],
-        })
-    return {"rows": rows}
