@@ -282,7 +282,7 @@ def player_profile(tm_id: str):
 
 @router.get("/player/{tm_id}/stats")
 def player_stats(tm_id: str, season_id: str = Query("2024", description="Season jaar, bijv. 2024")):
-    ck = cache_key("tm", "stats_v22", id=tm_id, season=season_id)
+    ck = cache_key("tm", "stats_v24", id=tm_id, season=season_id)
     cached = cache_get(ck, TTL_PROFILE)
     if cached:
         return ok(cached, "tm", cached=True)
@@ -302,6 +302,11 @@ def player_stats(tm_id: str, season_id: str = Query("2024", description="Season 
 
         def td(i): return t(tds[i].get_text(strip=True)) if len(tds) > i else None
 
+        season_val = td(0)
+        # Sla totaalrijen over — seizoen heeft formaat "25/26" of "2024"
+        if not season_val or not re.search(r"\d{2,4}[/-]\d{2,4}|\d{4}", season_val):
+            continue
+
         # td[7] bevat "1 / 0 / 270'" formaat — splits op " / "
         yrc_raw = td(7) or ""
         yrc = [x.strip() for x in yrc_raw.split("/")] if "/" in yrc_raw else []
@@ -309,7 +314,7 @@ def player_stats(tm_id: str, season_id: str = Query("2024", description="Season 
         red    = yrc[1] if len(yrc) > 1 else None
 
         rows.append({
-            "season":            td(0),
+            "season":            season_val,
             "competition":       t(comp_a.get_text(strip=True)) if comp_a else td(2),
             "competition_tm_id": extract_id(comp_href, "/wettbewerb/"),
             "club":              t(club_a.get_text(strip=True)) if club_a else None,
@@ -677,7 +682,7 @@ def fixtures(
 
 @router.get("/match/{game_id}")
 def match_details(game_id: str):
-    ck = cache_key("tm", "match_v22", id=game_id)
+    ck = cache_key("tm", "match_v24", id=game_id)
     cached = cache_get(ck, TTL_LIVE)
     if cached:
         return ok(cached, "tm", cached=True)
@@ -766,71 +771,91 @@ def match_details(game_id: str):
         "status":            parse_status(f"{home_score}:{away_score}" if home_score else ""),
     }
 
-    # ── Goals — sb-aktion-spielstand aanwezig = echte goal
+    # ── Goals, Cards, Substitutions — zoek via het events blok ─────
+    # TM gebruikt sb-aktion-heim/sb-aktion-gast maar soms anders genest
+    # Strategie: zoek alle rijen in het speelverslag die een /spieler/ link hebben
     goals = []
-    for side_class, club_name, club_tm_id in [
-        ("sb-aktion-heim", home_name, home_tm_id),
-        ("sb-aktion-gast", away_name, away_tm_id),
+    cards = []
+    substitutions = []
+
+    for side, club_name, club_tm_id in [
+        ("heim", home_name, home_tm_id),
+        ("gast", away_name, away_tm_id),
     ]:
-        for row in soup.find_all(class_=side_class):
-            score_div = row.find(class_="sb-aktion-spielstand")
-            if not score_div or not score_div.get_text(strip=True):
+        for outer in soup.find_all(class_=f"sb-aktion-{side}"):
+            # Echte content zit in .sb-aktion binnen de outer div
+            inner = outer.find(class_="sb-aktion") or outer
+
+            # Spelersnaam + TM ID via a.wichtig (staat in .sb-aktion-aktion)
+            aktion_div = inner.find(class_="sb-aktion-aktion")
+            wichtig_links = aktion_div.find_all("a", class_="wichtig") if aktion_div else []
+
+            def _name(a):
+                return t(a.get("title") or a.get_text(strip=True)) if a else None
+
+            def _pid(a):
+                m = re.search(r"/spieler/(\d+)", a["href"]) if a else None
+                return m.group(1) if m else None
+
+            # Minuut staat als laatste tekst in aktion_div: "..., 45+2'"
+            minute = None
+            if aktion_div:
+                raw = aktion_div.get_text(" ", strip=True)
+                m_min = re.search(r"(\d+(?:\+\d+)?)'", raw)
+                minute = m_min.group(0) if m_min else None
+
+            # Goal: heeft .sb-aktion-spielstand met score
+            score_div = inner.find(class_="sb-aktion-spielstand")
+            if score_div and score_div.get_text(strip=True):
+                try:
+                    scorer_a = wichtig_links[0] if wichtig_links else None
+                    assist_a = wichtig_links[1] if len(wichtig_links) > 1 else None
+                    type_el  = inner.find("span", class_=re.compile(r"sb-aktion-icon|icon"))
+                    type_text = t(type_el.get("title", "")) if type_el else ""
+                    goals.append({
+                        "minute":       minute,
+                        "scorer_name":  _name(scorer_a),
+                        "scorer_tm_id": _pid(scorer_a),
+                        "assist_name":  _name(assist_a),
+                        "assist_tm_id": _pid(assist_a),
+                        "goal_type":    _classify_goal(type_text),
+                        "assist_type":  _classify_assist(type_text),
+                        "club":         club_name,
+                        "club_tm_id":   club_tm_id,
+                    })
+                except Exception:
+                    pass
                 continue
-            try:
-                links = row.find_all("a", href=lambda h: h and "/spieler/" in h)
-                scorer_a  = links[0] if links else None
-                assist_a  = links[1] if len(links) > 1 else None
-                # Minuut: zoek in alle tekst van de rij naar "45'" patroon
-                minute = None
-                for el in row.find_all(string=re.compile(r"\d+'\s*$|\d+\+\d+'")):
-                    minute = t(el)
-                    break
-                if not minute:
-                    # Alternatief: eerste tekst-node die alleen cijfers en ' bevat
-                    raw_txt = row.get_text(" ", strip=True)
-                    m = re.search(r"(\d+(?:\+\d+)?)'", raw_txt)
-                    minute = m.group(0) if m else None
-                type_el   = row.find("span", class_=re.compile(r"sb-aktion-icon|icon"))
-                type_text = t(type_el.get("title", "")) if type_el else ""
-                goals.append({
+
+            # Wissel: heeft wechsel/auswechslung icon
+            wechsel = inner.find(class_=re.compile(r"wechsel|auswechslung|pfeil|arrow"))
+            if wechsel:
+                out_a = wichtig_links[0] if wichtig_links else None
+                in_a  = wichtig_links[1] if len(wichtig_links) > 1 else None
+                substitutions.append({
+                    "minute":           minute,
+                    "player_out_name":  _name(out_a),
+                    "player_out_tm_id": _pid(out_a),
+                    "player_in_name":   _name(in_a),
+                    "player_in_tm_id":  _pid(in_a),
+                    "club":             club_name,
+                    "club_tm_id":       club_tm_id,
+                })
+                continue
+
+            # Kaart: heeft gelb/rot span
+            card_icon = inner.find("span", class_=re.compile(r"gelb|rot|karte|card"))
+            if card_icon:
+                player_a = wichtig_links[0] if wichtig_links else None
+                icon_classes = " ".join(card_icon.get("class", []))
+                cards.append({
                     "minute":       minute,
-                    "scorer_name":  t(scorer_a.get_text(strip=True)) if scorer_a else None,
-                    "scorer_tm_id": re.search(r"/spieler/(\d+)", scorer_a["href"]).group(1) if scorer_a else None,
-                    "assist_name":  t(assist_a.get_text(strip=True)) if assist_a else None,
-                    "assist_tm_id": re.search(r"/spieler/(\d+)", assist_a["href"]).group(1) if assist_a else None,
-                    "assist_type":  _classify_assist(type_text),
-                    "goal_type":    _classify_goal(type_text),
+                    "player_name":  _name(player_a),
+                    "player_tm_id": _pid(player_a),
+                    "card_type":    _classify_card(icon_classes),
                     "club":         club_name,
                     "club_tm_id":   club_tm_id,
                 })
-            except Exception:
-                continue
-
-    # ── Cards ─────
-    cards = []
-    for side_class, club_name, club_tm_id in [
-        ("sb-aktion-heim", home_name, home_tm_id),
-        ("sb-aktion-gast", away_name, away_tm_id),
-    ]:
-        for row in soup.find_all(class_=side_class):
-            card_icon = row.find("span", class_=re.compile(r"gelb|rot|karte|card"))
-            if not card_icon:
-                continue
-            player_a  = row.find("a", href=lambda h: h and "/spieler/" in h)
-            raw_txt   = row.get_text(" ", strip=True)
-            m = re.search(r"(\d+(?:\+\d+)?)'", raw_txt)
-            minute = m.group(0) if m else None
-            icon_classes = " ".join(card_icon.get("class", []))
-            cards.append({
-                "minute":       minute,
-                "player_name":  t(player_a.get_text(strip=True)) if player_a else None,
-                "player_tm_id": re.search(r"/spieler/(\d+)", player_a["href"]).group(1) if player_a else None,
-                "card_type":    _classify_card(icon_classes),
-                "club":         club_name,
-                "club_tm_id":   club_tm_id,
-            })
-
-    # ── Lineups — felipeall: formation-player-container ─────
     all_players_el = soup.find_all(class_="formation-player-container")
     lineups = []
     for i, container in enumerate(all_players_el[:22]):
