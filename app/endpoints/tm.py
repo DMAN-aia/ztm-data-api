@@ -300,31 +300,32 @@ def player_stats(tm_id: str, season_id: str = Query("2024", description="Season 
         club_a    = tds[3].find("a") if len(tds) > 3 else None
         club_href = club_a["href"] if club_a else None
 
-        def td(i): return t(tds[i].get_text(strip=True)) if len(tds) > i else None
+        def _td(tds_inner, i):
+            return t(tds_inner[i].get_text(strip=True)) if len(tds_inner) > i else None
 
-        season_val = td(0)
+        season_val = _td(tds, 0)
         # Sla totaalrijen over — seizoen heeft formaat "25/26" of "2024"
-        if not season_val or not re.search(r"\d{2,4}[/-]\d{2,4}|\d{4}", season_val):
+        if not season_val or not re.search(r"\d{2,4}[/\-]\d{2,4}|\d{4}", season_val):
             continue
 
         # td[7] bevat "1 / 0 / 270'" formaat — splits op " / "
-        yrc_raw = td(7) or ""
+        yrc_raw = _td(tds, 7) or ""
         yrc = [x.strip() for x in yrc_raw.split("/")] if "/" in yrc_raw else []
         yellow = yrc[0] if len(yrc) > 0 else None
         red    = yrc[1] if len(yrc) > 1 else None
 
         rows.append({
             "season":            season_val,
-            "competition":       t(comp_a.get_text(strip=True)) if comp_a else td(2),
+            "competition":       t(comp_a.get_text(strip=True)) if comp_a else _td(tds, 2),
             "competition_tm_id": extract_id(comp_href, "/wettbewerb/"),
             "club":              t(club_a.get_text(strip=True)) if club_a else None,
             "club_tm_id":        extract_id(club_href, "/verein/"),
-            "appearances":       td(4),
-            "goals":             td(5),
-            "assists":           td(6),
+            "appearances":       _td(tds, 4),
+            "goals":             _td(tds, 5),
+            "assists":           _td(tds, 6),
             "yellow_cards":      yellow,
             "red_cards":         red,
-            "minutes":           td(8),
+            "minutes":           _td(tds, 8),
         })
     rows = [r for r in rows if any(v for k, v in r.items() if k != "season" and v)]
     cache_set(ck, rows)
@@ -483,21 +484,24 @@ def player_national_team(tm_id: str):
         if len(tds) < 5:
             continue
         # td[0]=vlag, td[1]=competition naam, td[2]=appearances, td[3]=goals,
-        # td[4]=assists, td[5]=yellow, td[6]=red, td[7 of 8]=minutes
+        # td[4]=assists, td[5]=yellow, td[6]=red, td[8]=minutes
         comp_a    = tds[1].find("a") if len(tds) > 1 else None
         comp_href = comp_a["href"] if comp_a else None
         comp_name = t(comp_a.get_text(strip=True)) if comp_a else t(tds[1].get_text(strip=True)) if len(tds) > 1 else None
+        # competition_tm_id: probeer /wettbewerb/ eerst, daarna /nationalmannschaft/
+        comp_tm_id = extract_id(comp_href, "/wettbewerb/") or extract_id(comp_href, "/nationalmannschaft/")
 
-        def tdn(i): return t(tds[i].get_text(strip=True)) if len(tds) > i else None
+        def _tdn(tds_inner, i):
+            return t(tds_inner[i].get_text(strip=True)) if len(tds_inner) > i else None
 
         rows.append({
             "competition":       comp_name,
-            "competition_tm_id": extract_id(comp_href, "/wettbewerb/") if comp_href else None,
+            "competition_tm_id": comp_tm_id,
             "season":            None,
-            "appearances":       tdn(2),
-            "goals":             tdn(3),
-            "assists":           tdn(4),
-            "minutes":           tdn(8) if len(tds) > 8 else tdn(7),
+            "appearances":       _tdn(tds, 2),
+            "goals":             _tdn(tds, 3),
+            "assists":           _tdn(tds, 4),
+            "minutes":           _tdn(tds, 8) if len(tds) > 8 else _tdn(tds, 7),
         })
     rows = [r for r in rows if any(v for v in r.values() if v)]
     cache_set(ck, rows)
@@ -816,8 +820,8 @@ def match_details(game_id: str):
             minute = _decode_minute(inner)
 
             # Wissel: heeft sb-aktion-wechsel-ein / sb-aktion-wechsel-aus
-            wechsel_ein = inner.find(class_="sb-aktion-wechsel-ein")
-            wechsel_aus = inner.find(class_="sb-aktion-wechsel-aus")
+            wechsel_ein = inner.find(class_=re.compile(r"wechsel-ein|sb-ein"))
+            wechsel_aus = inner.find(class_=re.compile(r"wechsel-aus|sb-aus"))
             if wechsel_ein or wechsel_aus:
                 in_a  = wechsel_ein.find("a", class_="wichtig") if wechsel_ein else None
                 out_a = wechsel_aus.find("a", class_="wichtig") if wechsel_aus else None
