@@ -1,4 +1,5 @@
 import re
+import json
 import time
 import random
 from datetime import datetime
@@ -17,16 +18,17 @@ TM_CEAPI = "https://www.transfermarkt.com/ceapi"
 
 TTL_PROFILE = 86400
 TTL_LIVE = 3600
-
+TTL_MV = 43200
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.transfermarkt.com/",
 }
 
 
 def fetch(url: str):
-    time.sleep(random.uniform(0.8, 1.5))
+    time.sleep(random.uniform(1.5, 3))
     r = requests.get(url, headers=HEADERS, timeout=20)
 
     if r.status_code == 403:
@@ -44,7 +46,7 @@ def fetch_json(url: str):
 
 
 def extract_id(href: str, segment: str):
-    if not href:
+    if not href or segment not in href:
         return None
     try:
         return href.split(segment)[1].split("/")[0]
@@ -52,8 +54,26 @@ def extract_id(href: str, segment: str):
         return None
 
 
+def t(s):
+    return s.strip() if s else None
+
+
 def now_iso():
     return datetime.utcnow().isoformat() + "Z"
+
+
+def clean_market_value(raw: str):
+
+    m = re.search(r"([€$£])([0-9,.]+)([mk]?)", raw or "", re.I)
+
+    if not m:
+        return {"value": None, "currency": None, "unit": None}
+
+    return {
+        "currency": m.group(1),
+        "value": float(m.group(2).replace(",", "")),
+        "unit": m.group(3).lower() or "unit",
+    }
 
 
 # ------------------------------------------------
@@ -63,8 +83,7 @@ def now_iso():
 @router.get("/player/{tm_id}")
 def player_profile(tm_id: str):
 
-    ck = cache_key("tm", "profile", id=tm_id)
-
+    ck = cache_key("tm", "profile_v22", id=tm_id)
     cached = cache_get(ck, TTL_PROFILE)
 
     if cached:
@@ -72,8 +91,7 @@ def player_profile(tm_id: str):
 
     soup = fetch(f"{TM_BASE}/-/profil/spieler/{tm_id}")
 
-    name_tag = soup.select_one("h1")
-
+    name_tag = soup.find("h1")
     name = name_tag.text.strip() if name_tag else None
 
     club_tag = soup.select_one("span.data-header__club a")
@@ -106,8 +124,7 @@ def player_profile(tm_id: str):
 @router.get("/player/{tm_id}/stats")
 def player_stats(tm_id: str, season_id: str = Query("2025")):
 
-    ck = cache_key("tm", "stats", id=tm_id, season=season_id)
-
+    ck = cache_key("tm", "stats_v22", id=tm_id, season=season_id)
     cached = cache_get(ck, TTL_PROFILE)
 
     if cached:
@@ -141,14 +158,44 @@ def player_stats(tm_id: str, season_id: str = Query("2025")):
 
 
 # ------------------------------------------------
+# PLAYER TRANSFERS
+# ------------------------------------------------
+
+@router.get("/player/{tm_id}/transfers")
+def player_transfers(tm_id: str):
+
+    ck = cache_key("tm", "transfers_v22", id=tm_id)
+    cached = cache_get(ck, TTL_PROFILE)
+
+    if cached:
+        return ok(cached, "tm", cached=True)
+
+    data = fetch_json(f"{TM_CEAPI}/transferHistory/list/{tm_id}")
+
+    transfers = []
+
+    for tr in data.get("transfers", []):
+
+        transfers.append({
+            "season": tr.get("season"),
+            "date": tr.get("date"),
+            "from_club": tr.get("from", {}).get("clubName"),
+            "to_club": tr.get("to", {}).get("clubName"),
+        })
+
+    cache_set(ck, transfers)
+
+    return ok(transfers, "tm")
+
+
+# ------------------------------------------------
 # CLUB SQUAD
 # ------------------------------------------------
 
 @router.get("/club/{tm_id}/squad")
 def club_squad(tm_id: str):
 
-    ck = cache_key("tm", "squad", id=tm_id)
-
+    ck = cache_key("tm", "squad_v22", id=tm_id)
     cached = cache_get(ck, TTL_PROFILE)
 
     if cached:
@@ -175,38 +222,6 @@ def club_squad(tm_id: str):
     cache_set(ck, players)
 
     return ok(players, "tm")
-
-
-# ------------------------------------------------
-# PLAYER TRANSFERS
-# ------------------------------------------------
-
-@router.get("/player/{tm_id}/transfers")
-def player_transfers(tm_id: str):
-
-    ck = cache_key("tm", "transfers", id=tm_id)
-
-    cached = cache_get(ck, TTL_PROFILE)
-
-    if cached:
-        return ok(cached, "tm", cached=True)
-
-    data = fetch_json(f"{TM_CEAPI}/transferHistory/list/{tm_id}")
-
-    transfers = []
-
-    for tr in data.get("transfers", []):
-
-        transfers.append({
-            "season": tr.get("season"),
-            "date": tr.get("date"),
-            "from_club": tr.get("from", {}).get("clubName"),
-            "to_club": tr.get("to", {}).get("clubName"),
-        })
-
-    cache_set(ck, transfers)
-
-    return ok(transfers, "tm")
 
 
 # ------------------------------------------------
