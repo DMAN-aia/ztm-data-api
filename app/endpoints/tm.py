@@ -811,34 +811,15 @@ def match_details(game_id: str):
             aktion_div = inner.find(class_="sb-aktion-aktion")
             minute = _decode_minute(inner)
 
-            # Wissel: heeft sb-aktion-wechsel-ein in all_classes
-            all_inner_classes = " ".join(
-                c for el in inner.find_all(class_=True)
-                for c in (el.get("class") or [])
-            )
-            is_wechsel = "sb-aktion-wechsel-ein" in all_inner_classes or "sb-ein" in all_inner_classes
-            if is_wechsel:
-                # wichtig_links[0] = IN, wichtig_links[1] = UIT (bevestigd via debug)
-                wichtig_all = inner.find_all("a", class_="wichtig")
-                in_a  = wichtig_all[0] if wichtig_all else None
-                out_a = wichtig_all[1] if len(wichtig_all) > 1 else None
-                substitutions.append({
-                    "minute":           minute,
-                    "player_in_name":   _name(in_a),
-                    "player_in_tm_id":  _pid(in_a),
-                    "player_out_name":  _name(out_a),
-                    "player_out_tm_id": _pid(out_a),
-                    "club":             club_name,
-                    "club_tm_id":       club_tm_id,
-                })
-                continue
-
-            wichtig_links = aktion_div.find_all("a", class_="wichtig") if aktion_div else []
-
-            # Goal: sb-aktion-spielstand zonder hide-for-small = echte score
             score_div = inner.find(class_="sb-aktion-spielstand")
-            score_classes = score_div.get("class", []) if score_div else []
-            if score_div and "hide-for-small" not in score_classes and score_div.get_text(strip=True):
+            score_text = score_div.get_text(strip=True) if score_div else ""
+            # Score tekst is "1:0", "1:1" etc — alleen goals hebben dit
+            has_score = bool(re.search(r"\d+:\d+", score_text))
+
+            wichtig_links = inner.find_all("a", class_="wichtig")
+
+            if has_score:
+                # GOAL
                 try:
                     scorer_a  = wichtig_links[0] if wichtig_links else None
                     assist_a  = wichtig_links[1] if len(wichtig_links) > 1 else None
@@ -857,12 +838,11 @@ def match_details(game_id: str):
                     })
                 except Exception:
                     pass
-                continue
 
-            # Kaart: heeft sb-sprite sb-gelb / sb-rot
-            card_icon = inner.find("span", class_=re.compile(r"sb-gelb|sb-rot|gelb|rot"))
-            if card_icon:
+            elif inner.find("span", class_=re.compile(r"sb-gelb|sb-rot")):
+                # KAART
                 player_a = wichtig_links[0] if wichtig_links else None
+                card_icon = inner.find("span", class_=re.compile(r"sb-gelb|sb-rot"))
                 icon_classes = " ".join(card_icon.get("class", []))
                 cards.append({
                     "minute":       minute,
@@ -871,6 +851,20 @@ def match_details(game_id: str):
                     "card_type":    _classify_card(icon_classes),
                     "club":         club_name,
                     "club_tm_id":   club_tm_id,
+                })
+
+            elif len(wichtig_links) >= 1:
+                # WISSEL — wichtig_links[0]=IN, wichtig_links[1]=UIT
+                in_a  = wichtig_links[0]
+                out_a = wichtig_links[1] if len(wichtig_links) > 1 else None
+                substitutions.append({
+                    "minute":           minute,
+                    "player_in_name":   _name(in_a),
+                    "player_in_tm_id":  _pid(in_a),
+                    "player_out_name":  _name(out_a),
+                    "player_out_tm_id": _pid(out_a),
+                    "club":             club_name,
+                    "club_tm_id":       club_tm_id,
                 })
     all_players_el = soup.find_all(class_="formation-player-container")
     lineups = []
