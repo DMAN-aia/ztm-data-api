@@ -230,16 +230,13 @@ def player_profile(tm_id: str):
     club_tag = soup.select_one("span.data-header__club a")
     club_href = club_tag["href"] if club_tag else None
 
-    # Nationalities — alleen header, niet de brede flaggenrahmen fallback
-    nat_container = (
-        soup.select_one("span.data-header__nationality") or
-        soup.select_one("div.data-header__nationality")
-    )
-    if nat_container:
-        nat_imgs = nat_container.find_all("img")
+    # Nationalities — uit data-header sectie, met dedup
+    # Reijnders heeft maar 1 nationaliteit dus flaggenrahmen in data-header is voldoende
+    header = soup.select_one("div.data-header__details")
+    if header:
+        nat_imgs = header.select("img.flaggenrahmen")
     else:
-        header = soup.select_one("div.data-header")
-        nat_imgs = header.select("img.flaggenrahmen") if header else []
+        nat_imgs = soup.select("div.data-header img.flaggenrahmen")
     nationalities = list(dict.fromkeys(
         img.get("title", "") for img in nat_imgs if img.get("title")
     ))
@@ -294,29 +291,35 @@ def player_stats(tm_id: str, season_id: str = Query("2024", description="Season 
     rows = []
     for tr in soup.select("table.items tbody tr"):
         tds = tr.find_all("td")
-        if len(tds) < 6:
+        if len(tds) < 5:
             continue
-        # td[0] = wettbewerb logo, td[1] = competition hauptlink, td[2] = club logo, td[3] = club hauptlink
-        # td[4] = appearances, td[5] = goals, td[6] = assists, td[7] = yellow, td[8] = red, td[9] = minutes
-        comp_a    = tds[1].find("a") if len(tds) > 1 else None
+        # td[0]=season, td[1]=comp logo, td[2]=competition, td[3]=club logo, td[4]=appearances
+        # td[5]=goals, td[6]=assists, td[7]=yellow/red/min samengevat, td[8]=minutes
+        comp_a    = tds[2].find("a") if len(tds) > 2 else None
         comp_href = comp_a["href"] if comp_a else None
         club_a    = tds[3].find("a") if len(tds) > 3 else None
         club_href = club_a["href"] if club_a else None
 
         def td(i): return t(tds[i].get_text(strip=True)) if len(tds) > i else None
 
+        # td[7] bevat "1 / 0 / 270'" formaat — splits op " / "
+        yrc_raw = td(7) or ""
+        yrc = [x.strip() for x in yrc_raw.split("/")] if "/" in yrc_raw else []
+        yellow = yrc[0] if len(yrc) > 0 else None
+        red    = yrc[1] if len(yrc) > 1 else None
+
         rows.append({
-            "season":            season_id,
-            "competition":       t(comp_a.get_text(strip=True)) if comp_a else None,
+            "season":            td(0),
+            "competition":       t(comp_a.get_text(strip=True)) if comp_a else td(2),
             "competition_tm_id": extract_id(comp_href, "/wettbewerb/"),
             "club":              t(club_a.get_text(strip=True)) if club_a else None,
             "club_tm_id":        extract_id(club_href, "/verein/"),
             "appearances":       td(4),
             "goals":             td(5),
             "assists":           td(6),
-            "yellow_cards":      td(7),
-            "red_cards":         td(8),
-            "minutes":           td(9),
+            "yellow_cards":      yellow,
+            "red_cards":         red,
+            "minutes":           td(8),
         })
     rows = [r for r in rows if any(v for k, v in r.items() if k != "season" and v)]
     cache_set(ck, rows)
@@ -431,7 +434,11 @@ def player_suspensions(tm_id: str):
     if cached:
         return ok(cached, "tm", cached=True)
 
-    soup = fetch(f"{TM_BASE}/x/sperrenhistorie/spieler/{tm_id}/plus/1")
+    try:
+        soup = fetch(f"{TM_BASE}/x/sperrenhistorie/spieler/{tm_id}/plus/1")
+    except Exception:
+        cache_set(ck, [])
+        return ok([], "tm")
     suspensions = []
     for row in soup.select("table.items tbody tr"):
         tds = row.find_all("td")
@@ -468,10 +475,10 @@ def player_national_team(tm_id: str):
     rows = []
     for tr in soup.select("table.items tbody tr"):
         tds = tr.find_all("td")
-        if len(tds) < 4:
+        if len(tds) < 5:
             continue
-        # Structuur: td[0]=vlag/logo, td[1]=competition naam, td[2]=season, td[3]=appearances,
-        # td[4]=goals, td[5]=assists, td[6]=minutes
+        # td[0]=vlag, td[1]=competition naam, td[2]=appearances, td[3]=goals,
+        # td[4]=assists, td[5]=yellow, td[6]=red, td[7 of 8]=minutes
         comp_a    = tds[1].find("a") if len(tds) > 1 else None
         comp_href = comp_a["href"] if comp_a else None
         comp_name = t(comp_a.get_text(strip=True)) if comp_a else t(tds[1].get_text(strip=True)) if len(tds) > 1 else None
@@ -481,11 +488,11 @@ def player_national_team(tm_id: str):
         rows.append({
             "competition":       comp_name,
             "competition_tm_id": extract_id(comp_href, "/wettbewerb/") if comp_href else None,
-            "season":            tdn(2),
-            "appearances":       tdn(3),
-            "goals":             tdn(4),
-            "assists":           tdn(5),
-            "minutes":           tdn(6),
+            "season":            None,
+            "appearances":       tdn(2),
+            "goals":             tdn(3),
+            "assists":           tdn(4),
+            "minutes":           tdn(8) if len(tds) > 8 else tdn(7),
         })
     rows = [r for r in rows if any(v for v in r.values() if v)]
     cache_set(ck, rows)
