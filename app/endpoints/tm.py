@@ -281,8 +281,8 @@ def player_profile(tm_id: str):
 # ─────────────────────────────────────────
 
 @router.get("/player/{tm_id}/stats")
-def player_stats(tm_id: str, season_id: str = Query("2024", description="Season jaar, bijv. 2024")):
-    ck = cache_key("tm", "stats_v24", id=tm_id, season=season_id)
+def player_stats(tm_id: str, season_id: str = Query("2025", description="Season jaar, bijv. 2025")):
+    ck = cache_key("tm", "stats_v27", id=tm_id, season=season_id)
     cached = cache_get(ck, TTL_PROFILE)
     if cached:
         return ok(cached, "tm", cached=True)
@@ -472,7 +472,7 @@ def player_suspensions(tm_id: str):
 
 @router.get("/player/{tm_id}/national-team")
 def player_national_team(tm_id: str):
-    ck = cache_key("tm", "national_v22", id=tm_id)
+    ck = cache_key("tm", "national_v27", id=tm_id)
     cached = cache_get(ck, TTL_PROFILE)
     if cached:
         return ok(cached, "tm", cached=True)
@@ -488,8 +488,11 @@ def player_national_team(tm_id: str):
         comp_a    = tds[1].find("a") if len(tds) > 1 else None
         comp_href = comp_a["href"] if comp_a else None
         comp_name = t(comp_a.get_text(strip=True)) if comp_a else t(tds[1].get_text(strip=True)) if len(tds) > 1 else None
-        # competition_tm_id: probeer /wettbewerb/ eerst, daarna /nationalmannschaft/
-        comp_tm_id = extract_id(comp_href, "/wettbewerb/") or extract_id(comp_href, "/nationalmannschaft/")
+        # competition_tm_id: zit na /wettbewerb/ in de href
+        comp_tm_id = None
+        if comp_href:
+            m = re.search(r"/wettbewerb/([^/]+)", comp_href)
+            comp_tm_id = m.group(1) if m else None
 
         def _tdn(tds_inner, i):
             return t(tds_inner[i].get_text(strip=True)) if len(tds_inner) > i else None
@@ -686,7 +689,7 @@ def fixtures(
 
 @router.get("/match/{game_id}")
 def match_details(game_id: str):
-    ck = cache_key("tm", "match_v24", id=game_id)
+    ck = cache_key("tm", "match_v27", id=game_id)
     cached = cache_get(ck, TTL_LIVE)
     if cached:
         return ok(cached, "tm", cached=True)
@@ -819,9 +822,9 @@ def match_details(game_id: str):
             aktion_div = inner.find(class_="sb-aktion-aktion")
             minute = _decode_minute(inner)
 
-            # Wissel: heeft sb-aktion-wechsel-ein / sb-aktion-wechsel-aus
-            wechsel_ein = inner.find(class_=re.compile(r"wechsel-ein|sb-ein"))
-            wechsel_aus = inner.find(class_=re.compile(r"wechsel-aus|sb-aus"))
+            # Wissel: heeft sb-aktion-wechsel-ein / sb-aktion-wechsel-aus divs
+            wechsel_ein = inner.find(lambda t: t.name and "sb-aktion-wechsel-ein" in t.get("class", []))
+            wechsel_aus = inner.find(lambda t: t.name and "sb-aktion-wechsel-aus" in t.get("class", []))
             if wechsel_ein or wechsel_aus:
                 in_a  = wechsel_ein.find("a", class_="wichtig") if wechsel_ein else None
                 out_a = wechsel_aus.find("a", class_="wichtig") if wechsel_aus else None
@@ -1081,3 +1084,76 @@ def clubs(comp_id: str = Query(..., description="Competition TM ID bijv. GB1")):
         })
     cache_set(ck, clubs_out)
     return ok(clubs_out, "tm")
+
+
+# ─────────────────────────────────────────
+# DEBUG ENDPOINTS — tijdelijk voor HTML inspectie
+# ─────────────────────────────────────────
+
+@router.get("/debug/match/{game_id}")
+def debug_match(game_id: str):
+    """Geeft ruwe HTML-fragmenten van match events terug voor selector debugging."""
+    soup = fetch(f"{TM_BASE}/spielbericht/index/spielbericht/{game_id}")
+    heim_rows = soup.find_all(class_="sb-aktion-heim")
+    gast_rows = soup.find_all(class_="sb-aktion-gast")
+
+    def row_info(row):
+        inner = row.find(class_="sb-aktion") or row
+        classes = [el.get("class", []) for el in inner.find_all(class_=True)]
+        all_classes = []
+        for cl in classes:
+            all_classes.extend(cl if isinstance(cl, list) else [cl])
+        wichtig = [{"text": a.get_text(strip=True), "title": a.get("title"), "href": a.get("href")}
+                   for a in inner.find_all("a", class_="wichtig")]
+        aktion_text = inner.find(class_="sb-aktion-aktion")
+        score_div = inner.find(class_="sb-aktion-spielstand")
+        uhr = inner.find(class_="sb-sprite-uhr-klein")
+        return {
+            "all_classes": list(set(all_classes)),
+            "score_text": score_div.get_text(strip=True) if score_div else None,
+            "score_classes": score_div.get("class") if score_div else None,
+            "wichtig_links": wichtig,
+            "aktion_text": aktion_text.get_text(" ", strip=True)[:200] if aktion_text else None,
+            "uhr_style": uhr.get("style") if uhr else None,
+            "raw_html": str(row)[:600],
+        }
+
+    return {
+        "heim_count": len(heim_rows),
+        "gast_count": len(gast_rows),
+        "heim_rows": [row_info(r) for r in heim_rows[:8]],
+        "gast_rows": [row_info(r) for r in gast_rows[:8]],
+    }
+
+
+@router.get("/debug/stats/{tm_id}")
+def debug_stats(tm_id: str, season_id: str = Query("2025")):
+    """Geeft ruwe tabelrijen terug van leistungsdaten voor selector debugging."""
+    soup = fetch(f"{TM_BASE}/x/leistungsdaten/spieler/{tm_id}/plus/0?saison={season_id}")
+    rows = []
+    for i, tr in enumerate(soup.select("table.items tbody tr")[:10]):
+        tds = tr.find_all("td")
+        rows.append({
+            "row_index": i,
+            "td_count": len(tds),
+            "tds": [{"index": j, "text": t(td.get_text(strip=True))[:40], "classes": td.get("class")}
+                    for j, td in enumerate(tds)],
+        })
+    return {"season_id": season_id, "rows": rows}
+
+
+@router.get("/debug/national-team/{tm_id}")
+def debug_national_team(tm_id: str):
+    """Geeft ruwe tabelrijen terug van nationalmannschaft voor selector debugging."""
+    soup = fetch(f"{TM_BASE}/x/nationalmannschaft/spieler/{tm_id}")
+    rows = []
+    for i, tr in enumerate(soup.select("table.items tbody tr")[:10]):
+        tds = tr.find_all("td")
+        rows.append({
+            "row_index": i,
+            "td_count": len(tds),
+            "tds": [{"index": j, "text": t(td.get_text(strip=True))[:40],
+                     "links": [{"text": a.get_text(strip=True), "href": a.get("href")} for a in td.find_all("a")]}
+                    for j, td in enumerate(tds)],
+        })
+    return {"rows": rows}
