@@ -293,38 +293,30 @@ def player_stats(tm_id: str, season_id: str = Query("2025", description="Season 
         tds = tr.find_all("td")
         if len(tds) < 5:
             continue
-        # td[0]=season, td[1]=comp logo, td[2]=competition, td[3]=club logo, td[4]=appearances
-        # td[5]=goals, td[6]=assists, td[7]=yellow/red/min samengevat, td[8]=minutes
-        comp_a    = tds[2].find("a") if len(tds) > 2 else None
+        # Structuur (bevestigd via debug): geen seizoen kolom
+        # td[0]=comp logo (leeg tekst), td[1]=competition naam, td[2]=appearances
+        # td[3]=goals, td[4]=assists, td[5]=yellow, td[6]=red, td[7]=?, td[8]=minutes
+        comp_a    = tds[1].find("a") if len(tds) > 1 else None
         comp_href = comp_a["href"] if comp_a else None
-        club_a    = tds[3].find("a") if len(tds) > 3 else None
-        club_href = club_a["href"] if club_a else None
 
         def _td(tds_inner, i):
             return t(tds_inner[i].get_text(strip=True)) if len(tds_inner) > i else None
 
-        season_val = _td(tds, 0)
-        # Sla totaalrijen over — seizoen heeft formaat "25/26" of "2024"
-        if not season_val or not re.search(r"\d{2,4}[/\-]\d{2,4}|\d{4}", season_val):
+        comp_name = t(comp_a.get_text(strip=True)) if comp_a else _td(tds, 1)
+        if not comp_name:
             continue
 
-        # td[7] bevat "1 / 0 / 270'" formaat — splits op " / "
-        yrc_raw = _td(tds, 7) or ""
-        yrc = [x.strip() for x in yrc_raw.split("/")] if "/" in yrc_raw else []
-        yellow = yrc[0] if len(yrc) > 0 else None
-        red    = yrc[1] if len(yrc) > 1 else None
-
         rows.append({
-            "season":            season_val,
-            "competition":       t(comp_a.get_text(strip=True)) if comp_a else _td(tds, 2),
-            "competition_tm_id": extract_id(comp_href, "/wettbewerb/"),
-            "club":              t(club_a.get_text(strip=True)) if club_a else None,
-            "club_tm_id":        extract_id(club_href, "/verein/"),
-            "appearances":       _td(tds, 4),
-            "goals":             _td(tds, 5),
-            "assists":           _td(tds, 6),
-            "yellow_cards":      yellow,
-            "red_cards":         red,
+            "season":            season_id,
+            "competition":       comp_name,
+            "competition_tm_id": extract_id(comp_href, "/wettbewerb/") or extract_id(comp_href, "/pokalwettbewerb/"),
+            "club":              None,
+            "club_tm_id":        None,
+            "appearances":       _td(tds, 2),
+            "goals":             _td(tds, 3),
+            "assists":           _td(tds, 4),
+            "yellow_cards":      _td(tds, 5),
+            "red_cards":         _td(tds, 6),
             "minutes":           _td(tds, 8),
         })
     rows = [r for r in rows if any(v for k, v in r.items() if k != "season" and v)]
@@ -488,10 +480,10 @@ def player_national_team(tm_id: str):
         comp_a    = tds[1].find("a") if len(tds) > 1 else None
         comp_href = comp_a["href"] if comp_a else None
         comp_name = t(comp_a.get_text(strip=True)) if comp_a else t(tds[1].get_text(strip=True)) if len(tds) > 1 else None
-        # competition_tm_id: zit na /wettbewerb/ in de href
+        # competition_tm_id: zit na /wettbewerb/ of /pokalwettbewerb/ in de href
         comp_tm_id = None
         if comp_href:
-            m = re.search(r"/wettbewerb/([^/]+)", comp_href)
+            m = re.search(r"/(?:wettbewerb|pokalwettbewerb)/([^/]+)", comp_href)
             comp_tm_id = m.group(1) if m else None
 
         def _tdn(tds_inner, i):
@@ -793,24 +785,21 @@ def match_details(game_id: str):
         return m.group(1) if m else None
 
     def _decode_minute(inner):
-        # Minuut staat als tekst in sb-aktion-aktion voor goals/cards: "..., 45'"
-        aktion_div = inner.find(class_="sb-aktion-aktion")
-        if aktion_div:
-            raw = aktion_div.get_text(" ", strip=True)
-            m = re.search(r"(\d+(?:\+\d+)?)'", raw)
-            if m:
-                return m.group(0)
-        # Fallback: sb-sprite-uhr-klein background-position
-        # Sprite: x = -36px * minuut (minuut 1 = -36px, minuut 2 = -72px etc)
         uhr = inner.find(class_="sb-sprite-uhr-klein")
         if uhr:
             style = uhr.get("style", "")
+            # Check eerst of er tekst is (bv "+6" voor extra time)
+            uhr_text = uhr.get_text(strip=True)
             m = re.search(r"background-position:\s*(-?\d+)px\s+(-?\d+)px", style)
             if m:
                 x = abs(int(m.group(1)))
-                minute_num = x // 36
+                y = abs(int(m.group(2)))
+                col = x // 36
+                row = y // 36
+                minute_num = row * 9 + col
                 if minute_num > 0:
-                    return f"{minute_num}'"
+                    suffix = f"+{uhr_text}" if uhr_text and uhr_text.startswith("+") else ""
+                    return f"{minute_num}{suffix}'"
         return None
 
     for side, club_name, club_tm_id in [
@@ -822,12 +811,17 @@ def match_details(game_id: str):
             aktion_div = inner.find(class_="sb-aktion-aktion")
             minute = _decode_minute(inner)
 
-            # Wissel: heeft sb-aktion-wechsel-ein / sb-aktion-wechsel-aus divs
-            wechsel_ein = inner.find(lambda t: t.name and "sb-aktion-wechsel-ein" in t.get("class", []))
-            wechsel_aus = inner.find(lambda t: t.name and "sb-aktion-wechsel-aus" in t.get("class", []))
-            if wechsel_ein or wechsel_aus:
-                in_a  = wechsel_ein.find("a", class_="wichtig") if wechsel_ein else None
-                out_a = wechsel_aus.find("a", class_="wichtig") if wechsel_aus else None
+            # Wissel: heeft sb-aktion-wechsel-ein in all_classes
+            all_inner_classes = " ".join(
+                c for el in inner.find_all(class_=True)
+                for c in (el.get("class") or [])
+            )
+            is_wechsel = "sb-aktion-wechsel-ein" in all_inner_classes or "sb-ein" in all_inner_classes
+            if is_wechsel:
+                # wichtig_links[0] = IN, wichtig_links[1] = UIT (bevestigd via debug)
+                wichtig_all = inner.find_all("a", class_="wichtig")
+                in_a  = wichtig_all[0] if wichtig_all else None
+                out_a = wichtig_all[1] if len(wichtig_all) > 1 else None
                 substitutions.append({
                     "minute":           minute,
                     "player_in_name":   _name(in_a),
