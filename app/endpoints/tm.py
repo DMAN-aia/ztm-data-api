@@ -16,21 +16,32 @@ TM_CEAPI = "https://www.transfermarkt.com/ceapi"
 
 TTL_PROFILE = 86400
 TTL_LIVE = 3600
+TTL_MV = 43200
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0",
-    "Accept-Language": "en-US,en;q=0.9"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/121.0",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html",
+    "Connection": "keep-alive",
 }
+
+
+session = requests.Session()
+session.headers.update(HEADERS)
 
 
 def fetch(url: str):
 
-    time.sleep(random.uniform(1.2, 2.4))
+    time.sleep(random.uniform(1.4, 2.8))
 
-    r = requests.get(url, headers=HEADERS, timeout=25)
+    try:
+        r = session.get(url, timeout=25)
+    except requests.exceptions.RequestException:
+        raise HTTPException(status_code=500, detail="Transfermarkt request failed")
 
     if r.status_code == 403:
-        raise HTTPException(status_code=403, detail="TM blocked request")
+        time.sleep(random.uniform(5, 8))
+        r = session.get(url, timeout=25)
 
     r.raise_for_status()
 
@@ -39,7 +50,13 @@ def fetch(url: str):
 
 def fetch_json(url: str):
 
-    r = requests.get(url, headers=HEADERS, timeout=25)
+    time.sleep(random.uniform(1.0, 2.0))
+
+    r = session.get(url, timeout=25)
+
+    if r.status_code == 403:
+        time.sleep(random.uniform(5, 8))
+        r = session.get(url, timeout=25)
 
     r.raise_for_status()
 
@@ -80,15 +97,13 @@ def parse_int(v):
 
 
 def now_iso():
+
     return datetime.utcnow().isoformat() + "Z"
-
-
-# PLAYER PROFILE
 
 @router.get("/player/{tm_id}")
 def player_profile(tm_id: str):
 
-    ck = cache_key("tm", "profile_v50", id=tm_id)
+    ck = cache_key("tm", "profile_final", id=tm_id)
 
     cached = cache_get(ck, TTL_PROFILE)
 
@@ -121,17 +136,12 @@ def player_profile(tm_id: str):
     return ok(data, "tm")
 
 
-# PLAYER STATS (stable parser)
-
 @router.get("/player/{tm_id}/stats")
 def player_stats(tm_id: str, season_id: str = Query("2025")):
 
     soup = fetch(f"{TM_BASE}/-/leistungsdaten/spieler/{tm_id}/plus/0?saison={season_id}")
 
-    headers = [
-        th.text.strip().lower()
-        for th in soup.select("table.items thead th")
-    ]
+    headers = [th.text.strip().lower() for th in soup.select("table.items thead th")]
 
     rows = []
 
@@ -176,114 +186,5 @@ def player_stats(tm_id: str, season_id: str = Query("2025")):
                 row["appearances"] = v
 
         rows.append(row)
-
-    return ok(rows, "tm")
-
-
-# TRANSFERS
-
-@router.get("/player/{tm_id}/transfers")
-def player_transfers(tm_id: str):
-
-    data = fetch_json(f"{TM_CEAPI}/transferHistory/list/{tm_id}")
-
-    transfers = []
-
-    for tr in data.get("transfers", []):
-
-        transfers.append({
-            "season": tr.get("season"),
-            "date": tr.get("date"),
-            "from_club": tr.get("from", {}).get("clubName"),
-            "to_club": tr.get("to", {}).get("clubName")
-        })
-
-    return ok(transfers, "tm")
-
-
-# MARKET VALUE
-
-@router.get("/player/{tm_id}/market-value-history")
-def market_value_history(tm_id: str):
-
-    data = fetch_json(f"{TM_CEAPI}/marketValueDevelopment/graph/{tm_id}")
-
-    return ok(data.get("list", []), "tm")
-
-
-# INJURIES
-
-@router.get("/player/{tm_id}/injuries")
-def player_injuries(tm_id: str):
-
-    soup = fetch(f"{TM_BASE}/-/verletzungen/spieler/{tm_id}")
-
-    injuries = []
-
-    for row in soup.select("table.items tbody tr"):
-
-        tds = [td.text.strip() for td in row.find_all("td")]
-
-        if len(tds) < 4:
-            continue
-
-        injuries.append({
-            "season": tds[0],
-            "injury_type": tds[1],
-            "start_date": tds[2],
-            "end_date": tds[3],
-            "matches_missed": parse_int(tds[4]) if len(tds) > 4 else None
-        })
-
-    return ok(injuries, "tm")
-
-
-# SUSPENSIONS
-
-@router.get("/player/{tm_id}/suspensions")
-def player_suspensions(tm_id: str):
-
-    soup = fetch(f"{TM_BASE}/-/sperrenhistorie/spieler/{tm_id}")
-
-    rows = []
-
-    for row in soup.select("table.items tbody tr"):
-
-        tds = [td.text.strip() for td in row.find_all("td")]
-
-        if len(tds) < 3:
-            continue
-
-        rows.append({
-            "competition": tds[0],
-            "reason": tds[1],
-            "matches_missed": parse_int(tds[2])
-        })
-
-    return ok(rows, "tm")
-
-
-# NATIONAL TEAM
-
-@router.get("/player/{tm_id}/national-team")
-def national_team(tm_id: str):
-
-    soup = fetch(f"{TM_BASE}/-/nationalmannschaft/spieler/{tm_id}")
-
-    rows = []
-
-    for tr in soup.select("table.items tbody tr"):
-
-        tds = [td.text.strip() for td in tr.find_all("td")]
-
-        if len(tds) < 5:
-            continue
-
-        rows.append({
-            "competition": tds[1],
-            "caps": parse_int(tds[2]),
-            "goals": parse_int(tds[3]),
-            "assists": parse_int(tds[4])
-        })
 
     return ok(rows, "tm")
