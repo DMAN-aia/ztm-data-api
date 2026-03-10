@@ -21,11 +21,18 @@ TTL_LIVE = 3600
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.transfermarkt.com/",
 }
 
 
+# ------------------------------------------------
+# HELPERS
+# ------------------------------------------------
+
 def fetch(url: str):
+
     time.sleep(random.uniform(1, 2))
+
     r = requests.get(url, headers=HEADERS, timeout=20)
 
     if r.status_code == 403:
@@ -37,25 +44,27 @@ def fetch(url: str):
 
 
 def fetch_json(url: str):
+
     r = requests.get(url, headers=HEADERS, timeout=20)
+
     r.raise_for_status()
+
     return r.json()
 
 
 def extract_id(href: str, segment: str):
+
     if not href or segment not in href:
         return None
+
     try:
         return href.split(segment)[1].split("/")[0]
     except:
         return None
 
 
-def now_iso():
-    return datetime.utcnow().isoformat() + "Z"
-
-
 def clean_name(name: str):
+
     if not name:
         return None
 
@@ -63,6 +72,11 @@ def clean_name(name: str):
     name = re.sub(r"\s+", " ", name)
 
     return name.strip()
+
+
+def now_iso():
+
+    return datetime.utcnow().isoformat() + "Z"
 
 
 # ------------------------------------------------
@@ -82,9 +96,11 @@ def player_profile(tm_id: str):
     soup = fetch(f"{TM_BASE}/-/profil/spieler/{tm_id}")
 
     name_tag = soup.find("h1")
+
     name = clean_name(name_tag.text if name_tag else None)
 
     club_tag = soup.select_one("span.data-header__club a")
+
     club_href = club_tag["href"] if club_tag else None
 
     nationalities = list(dict.fromkeys(
@@ -114,7 +130,7 @@ def player_profile(tm_id: str):
 @router.get("/player/{tm_id}/stats")
 def player_stats(tm_id: str, season_id: str = Query("2025")):
 
-    ck = cache_key("tm", "stats_v22", id=tm_id, season=season_id)
+    ck = cache_key("tm", "stats_v23", id=tm_id, season=season_id)
 
     cached = cache_get(ck, TTL_PROFILE)
 
@@ -155,7 +171,7 @@ def player_stats(tm_id: str, season_id: str = Query("2025")):
 @router.get("/player/{tm_id}/transfers")
 def player_transfers(tm_id: str):
 
-    ck = cache_key("tm", "transfers_v22", id=tm_id)
+    ck = cache_key("tm", "transfers_v23", id=tm_id)
 
     cached = cache_get(ck, TTL_PROFILE)
 
@@ -187,7 +203,7 @@ def player_transfers(tm_id: str):
 @router.get("/club/{tm_id}/squad")
 def club_squad(tm_id: str):
 
-    ck = cache_key("tm", "squad_v22", id=tm_id)
+    ck = cache_key("tm", "squad_v23", id=tm_id)
 
     cached = cache_get(ck, TTL_PROFILE)
 
@@ -198,6 +214,8 @@ def club_squad(tm_id: str):
 
     players = []
 
+    seen = set()
+
     for row in soup.select("table.items tbody tr"):
 
         name_a = row.select_one("td.hauptlink a")
@@ -207,9 +225,16 @@ def club_squad(tm_id: str):
 
         href = name_a["href"]
 
+        pid = extract_id(href, "/spieler/")
+
+        if not pid or pid in seen:
+            continue
+
+        seen.add(pid)
+
         players.append({
-            "player_tm_id": extract_id(href, "/spieler/"),
-            "name": clean_name(name_a.text),
+            "player_tm_id": pid,
+            "name": clean_name(name_a.text)
         })
 
     cache_set(ck, players)
