@@ -21,8 +21,18 @@ TTL_LIVE = 3600
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.transfermarkt.com/",
+    "Referer": "https://www.transfermarkt.com/"
 }
+
+ASIA_TARGET = [
+    "Japan",
+    "South Korea",
+    "Vietnam",
+    "Thailand",
+    "Malaysia",
+    "Indonesia",
+    "Philippines"
+]
 
 
 # ------------------------------------------------
@@ -31,9 +41,9 @@ HEADERS = {
 
 def fetch(url: str):
 
-    time.sleep(random.uniform(1, 2))
+    time.sleep(random.uniform(1.2, 2.3))
 
-    r = requests.get(url, headers=HEADERS, timeout=20)
+    r = requests.get(url, headers=HEADERS, timeout=25)
 
     if r.status_code == 403:
         raise HTTPException(status_code=403, detail="Transfermarkt blocked request")
@@ -45,7 +55,7 @@ def fetch(url: str):
 
 def fetch_json(url: str):
 
-    r = requests.get(url, headers=HEADERS, timeout=20)
+    r = requests.get(url, headers=HEADERS, timeout=25)
 
     r.raise_for_status()
 
@@ -74,6 +84,17 @@ def clean_name(name: str):
     return name.strip()
 
 
+def parse_int(v):
+
+    if not v or v == "-":
+        return None
+
+    try:
+        return int(v)
+    except:
+        return None
+
+
 def now_iso():
 
     return datetime.utcnow().isoformat() + "Z"
@@ -86,7 +107,7 @@ def now_iso():
 @router.get("/player/{tm_id}")
 def player_profile(tm_id: str):
 
-    ck = cache_key("tm", "profile_v23", id=tm_id)
+    ck = cache_key("tm", "profile_v41", id=tm_id)
 
     cached = cache_get(ck, TTL_PROFILE)
 
@@ -97,11 +118,7 @@ def player_profile(tm_id: str):
 
     name_tag = soup.find("h1")
 
-    name = clean_name(name_tag.text if name_tag else None)
-
     club_tag = soup.select_one("span.data-header__club a")
-
-    club_href = club_tag["href"] if club_tag else None
 
     nationalities = list(dict.fromkeys(
         img.get("title")
@@ -111,11 +128,11 @@ def player_profile(tm_id: str):
 
     data = {
         "tm_id": tm_id,
-        "name": name,
+        "name": clean_name(name_tag.text if name_tag else None),
         "nationalities": nationalities,
         "current_club": club_tag.text.strip() if club_tag else None,
-        "club_tm_id": extract_id(club_href, "/verein/"),
-        "last_updated": now_iso(),
+        "club_tm_id": extract_id(club_tag["href"], "/verein/") if club_tag else None,
+        "last_updated": now_iso()
     }
 
     cache_set(ck, data)
@@ -130,13 +147,6 @@ def player_profile(tm_id: str):
 @router.get("/player/{tm_id}/stats")
 def player_stats(tm_id: str, season_id: str = Query("2025")):
 
-    ck = cache_key("tm", "stats_v23", id=tm_id, season=season_id)
-
-    cached = cache_get(ck, TTL_PROFILE)
-
-    if cached:
-        return ok(cached, "tm", cached=True)
-
     soup = fetch(f"{TM_BASE}/-/leistungsdaten/spieler/{tm_id}/plus/0?saison={season_id}")
 
     rows = []
@@ -145,7 +155,7 @@ def player_stats(tm_id: str, season_id: str = Query("2025")):
 
         tds = tr.find_all("td")
 
-        if len(tds) < 5:
+        if len(tds) < 7:
             continue
 
         comp_a = tds[1].find("a")
@@ -154,12 +164,13 @@ def player_stats(tm_id: str, season_id: str = Query("2025")):
             "season": season_id,
             "competition": comp_a.text.strip() if comp_a else None,
             "competition_tm_id": extract_id(comp_a["href"], "/wettbewerb/") if comp_a else None,
-            "appearances": tds[2].text.strip(),
-            "goals": tds[3].text.strip(),
-            "assists": tds[4].text.strip(),
+            "appearances": parse_int(tds[2].text),
+            "goals": parse_int(tds[3].text),
+            "assists": parse_int(tds[4].text),
+            "yellow_cards": parse_int(tds[5].text),
+            "red_cards": parse_int(tds[6].text),
+            "minutes": parse_int(tds[8].text) if len(tds) > 8 else None
         })
-
-    cache_set(ck, rows)
 
     return ok(rows, "tm")
 
@@ -171,13 +182,6 @@ def player_stats(tm_id: str, season_id: str = Query("2025")):
 @router.get("/player/{tm_id}/transfers")
 def player_transfers(tm_id: str):
 
-    ck = cache_key("tm", "transfers_v23", id=tm_id)
-
-    cached = cache_get(ck, TTL_PROFILE)
-
-    if cached:
-        return ok(cached, "tm", cached=True)
-
     data = fetch_json(f"{TM_CEAPI}/transferHistory/list/{tm_id}")
 
     transfers = []
@@ -188,12 +192,22 @@ def player_transfers(tm_id: str):
             "season": tr.get("season"),
             "date": tr.get("date"),
             "from_club": tr.get("from", {}).get("clubName"),
-            "to_club": tr.get("to", {}).get("clubName"),
+            "to_club": tr.get("to", {}).get("clubName")
         })
 
-    cache_set(ck, transfers)
-
     return ok(transfers, "tm")
+
+
+# ------------------------------------------------
+# MARKET VALUE HISTORY
+# ------------------------------------------------
+
+@router.get("/player/{tm_id}/market-value-history")
+def market_value_history(tm_id: str):
+
+    data = fetch_json(f"{TM_CEAPI}/marketValueDevelopment/graph/{tm_id}")
+
+    return ok(data.get("list", []), "tm")
 
 
 # ------------------------------------------------
@@ -202,13 +216,6 @@ def player_transfers(tm_id: str):
 
 @router.get("/club/{tm_id}/squad")
 def club_squad(tm_id: str):
-
-    ck = cache_key("tm", "squad_v23", id=tm_id)
-
-    cached = cache_get(ck, TTL_PROFILE)
-
-    if cached:
-        return ok(cached, "tm", cached=True)
 
     soup = fetch(f"{TM_BASE}/-/kader/verein/{tm_id}/saison_id/2024")
 
@@ -223,9 +230,7 @@ def club_squad(tm_id: str):
         if not name_a:
             continue
 
-        href = name_a["href"]
-
-        pid = extract_id(href, "/spieler/")
+        pid = extract_id(name_a["href"], "/spieler/")
 
         if not pid or pid in seen:
             continue
@@ -237,9 +242,73 @@ def club_squad(tm_id: str):
             "name": clean_name(name_a.text)
         })
 
-    cache_set(ck, players)
-
     return ok(players, "tm")
+
+
+# ------------------------------------------------
+# COMPETITION CLUBS
+# ------------------------------------------------
+
+@router.get("/tm/clubs")
+def clubs(comp_id: str):
+
+    soup = fetch(f"{TM_BASE}/-/startseite/wettbewerb/{comp_id}")
+
+    clubs = []
+
+    seen = set()
+
+    for a in soup.select("a[href*='/verein/']"):
+
+        cid = extract_id(a["href"], "/verein/")
+
+        if not cid or cid in seen:
+            continue
+
+        seen.add(cid)
+
+        clubs.append({
+            "club_tm_id": cid,
+            "club_name": a.text.strip()
+        })
+
+    return ok(clubs, "tm")
+
+
+# ------------------------------------------------
+# MATCH EVENTS
+# ------------------------------------------------
+
+@router.get("/match/{game_id}")
+def match_details(game_id: str):
+
+    soup = fetch(f"{TM_BASE}/spielbericht/index/spielbericht/{game_id}")
+
+    goals = []
+    cards = []
+    subs = []
+
+    for event in soup.select(".sb-aktion"):
+
+        txt = event.get_text(" ", strip=True).lower()
+
+        if re.search(r"\d+:\d+", txt):
+            goals.append({"event": txt})
+
+        if "yellow" in txt:
+            cards.append({"type": "yellow", "event": txt})
+
+        if "red" in txt:
+            cards.append({"type": "red", "event": txt})
+
+        if "substitution" in txt:
+            subs.append({"event": txt})
+
+    return ok({
+        "goals": goals,
+        "cards": cards,
+        "substitutions": subs
+    }, "tm")
 
 
 # ------------------------------------------------
