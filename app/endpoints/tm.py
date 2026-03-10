@@ -9,7 +9,6 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.utils.common import ok, cache_key, cache_get, cache_set
 
-
 router = APIRouter()
 
 TM_BASE = "https://www.transfermarkt.com"
@@ -20,33 +19,18 @@ TTL_LIVE = 3600
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.transfermarkt.com/"
+    "Accept-Language": "en-US,en;q=0.9"
 }
 
-ASIA_TARGET = [
-    "Japan",
-    "South Korea",
-    "Vietnam",
-    "Thailand",
-    "Malaysia",
-    "Indonesia",
-    "Philippines"
-]
-
-
-# ------------------------------------------------
-# HELPERS
-# ------------------------------------------------
 
 def fetch(url: str):
 
-    time.sleep(random.uniform(1.2, 2.3))
+    time.sleep(random.uniform(1.2, 2.4))
 
     r = requests.get(url, headers=HEADERS, timeout=25)
 
     if r.status_code == 403:
-        raise HTTPException(status_code=403, detail="Transfermarkt blocked request")
+        raise HTTPException(status_code=403, detail="TM blocked request")
 
     r.raise_for_status()
 
@@ -73,7 +57,7 @@ def extract_id(href: str, segment: str):
         return None
 
 
-def clean_name(name: str):
+def clean_name(name):
 
     if not name:
         return None
@@ -96,18 +80,15 @@ def parse_int(v):
 
 
 def now_iso():
-
     return datetime.utcnow().isoformat() + "Z"
 
 
-# ------------------------------------------------
 # PLAYER PROFILE
-# ------------------------------------------------
 
 @router.get("/player/{tm_id}")
 def player_profile(tm_id: str):
 
-    ck = cache_key("tm", "profile_v41", id=tm_id)
+    ck = cache_key("tm", "profile_v50", id=tm_id)
 
     cached = cache_get(ck, TTL_PROFILE)
 
@@ -140,44 +121,66 @@ def player_profile(tm_id: str):
     return ok(data, "tm")
 
 
-# ------------------------------------------------
-# PLAYER STATS
-# ------------------------------------------------
+# PLAYER STATS (stable parser)
 
 @router.get("/player/{tm_id}/stats")
 def player_stats(tm_id: str, season_id: str = Query("2025")):
 
     soup = fetch(f"{TM_BASE}/-/leistungsdaten/spieler/{tm_id}/plus/0?saison={season_id}")
 
+    headers = [
+        th.text.strip().lower()
+        for th in soup.select("table.items thead th")
+    ]
+
     rows = []
 
     for tr in soup.select("table.items tbody tr"):
 
-        tds = tr.find_all("td")
+        tds = [td.text.strip() for td in tr.find_all("td")]
 
-        if len(tds) < 7:
+        if len(tds) < 5:
             continue
 
-        comp_a = tds[1].find("a")
+        comp_a = tr.select_one("td:nth-child(2) a")
 
-        rows.append({
+        row = {
             "season": season_id,
             "competition": comp_a.text.strip() if comp_a else None,
-            "competition_tm_id": extract_id(comp_a["href"], "/wettbewerb/") if comp_a else None,
-            "appearances": parse_int(tds[2].text),
-            "goals": parse_int(tds[3].text),
-            "assists": parse_int(tds[4].text),
-            "yellow_cards": parse_int(tds[5].text),
-            "red_cards": parse_int(tds[6].text),
-            "minutes": parse_int(tds[8].text) if len(tds) > 8 else None
-        })
+            "competition_tm_id": extract_id(comp_a["href"], "/wettbewerb/") if comp_a else None
+        }
+
+        for i, h in enumerate(headers):
+
+            if i >= len(tds):
+                continue
+
+            v = parse_int(tds[i])
+
+            if "goals" in h:
+                row["goals"] = v
+
+            if "assists" in h:
+                row["assists"] = v
+
+            if "yellow" in h:
+                row["yellow_cards"] = v
+
+            if "red" in h:
+                row["red_cards"] = v
+
+            if "minutes" in h:
+                row["minutes"] = v
+
+            if "appearances" in h:
+                row["appearances"] = v
+
+        rows.append(row)
 
     return ok(rows, "tm")
 
 
-# ------------------------------------------------
-# PLAYER TRANSFERS
-# ------------------------------------------------
+# TRANSFERS
 
 @router.get("/player/{tm_id}/transfers")
 def player_transfers(tm_id: str):
@@ -198,9 +201,7 @@ def player_transfers(tm_id: str):
     return ok(transfers, "tm")
 
 
-# ------------------------------------------------
-# MARKET VALUE HISTORY
-# ------------------------------------------------
+# MARKET VALUE
 
 @router.get("/player/{tm_id}/market-value-history")
 def market_value_history(tm_id: str):
@@ -210,111 +211,79 @@ def market_value_history(tm_id: str):
     return ok(data.get("list", []), "tm")
 
 
-# ------------------------------------------------
-# CLUB SQUAD
-# ------------------------------------------------
+# INJURIES
 
-@router.get("/club/{tm_id}/squad")
-def club_squad(tm_id: str):
+@router.get("/player/{tm_id}/injuries")
+def player_injuries(tm_id: str):
 
-    soup = fetch(f"{TM_BASE}/-/kader/verein/{tm_id}/saison_id/2024")
+    soup = fetch(f"{TM_BASE}/-/verletzungen/spieler/{tm_id}")
 
-    players = []
-
-    seen = set()
+    injuries = []
 
     for row in soup.select("table.items tbody tr"):
 
-        name_a = row.select_one("td.hauptlink a")
+        tds = [td.text.strip() for td in row.find_all("td")]
 
-        if not name_a:
+        if len(tds) < 4:
             continue
 
-        pid = extract_id(name_a["href"], "/spieler/")
-
-        if not pid or pid in seen:
-            continue
-
-        seen.add(pid)
-
-        players.append({
-            "player_tm_id": pid,
-            "name": clean_name(name_a.text)
+        injuries.append({
+            "season": tds[0],
+            "injury_type": tds[1],
+            "start_date": tds[2],
+            "end_date": tds[3],
+            "matches_missed": parse_int(tds[4]) if len(tds) > 4 else None
         })
 
-    return ok(players, "tm")
+    return ok(injuries, "tm")
 
 
-# ------------------------------------------------
-# COMPETITION CLUBS
-# ------------------------------------------------
+# SUSPENSIONS
 
-@router.get("/tm/clubs")
-def clubs(comp_id: str):
+@router.get("/player/{tm_id}/suspensions")
+def player_suspensions(tm_id: str):
 
-    soup = fetch(f"{TM_BASE}/-/startseite/wettbewerb/{comp_id}")
+    soup = fetch(f"{TM_BASE}/-/sperrenhistorie/spieler/{tm_id}")
 
-    clubs = []
+    rows = []
 
-    seen = set()
+    for row in soup.select("table.items tbody tr"):
 
-    for a in soup.select("a[href*='/verein/']"):
+        tds = [td.text.strip() for td in row.find_all("td")]
 
-        cid = extract_id(a["href"], "/verein/")
-
-        if not cid or cid in seen:
+        if len(tds) < 3:
             continue
 
-        seen.add(cid)
-
-        clubs.append({
-            "club_tm_id": cid,
-            "club_name": a.text.strip()
+        rows.append({
+            "competition": tds[0],
+            "reason": tds[1],
+            "matches_missed": parse_int(tds[2])
         })
 
-    return ok(clubs, "tm")
+    return ok(rows, "tm")
 
 
-# ------------------------------------------------
-# MATCH EVENTS
-# ------------------------------------------------
+# NATIONAL TEAM
 
-@router.get("/match/{game_id}")
-def match_details(game_id: str):
+@router.get("/player/{tm_id}/national-team")
+def national_team(tm_id: str):
 
-    soup = fetch(f"{TM_BASE}/spielbericht/index/spielbericht/{game_id}")
+    soup = fetch(f"{TM_BASE}/-/nationalmannschaft/spieler/{tm_id}")
 
-    goals = []
-    cards = []
-    subs = []
+    rows = []
 
-    for event in soup.select(".sb-aktion"):
+    for tr in soup.select("table.items tbody tr"):
 
-        txt = event.get_text(" ", strip=True).lower()
+        tds = [td.text.strip() for td in tr.find_all("td")]
 
-        if re.search(r"\d+:\d+", txt):
-            goals.append({"event": txt})
+        if len(tds) < 5:
+            continue
 
-        if "yellow" in txt:
-            cards.append({"type": "yellow", "event": txt})
+        rows.append({
+            "competition": tds[1],
+            "caps": parse_int(tds[2]),
+            "goals": parse_int(tds[3]),
+            "assists": parse_int(tds[4])
+        })
 
-        if "red" in txt:
-            cards.append({"type": "red", "event": txt})
-
-        if "substitution" in txt:
-            subs.append({"event": txt})
-
-    return ok({
-        "goals": goals,
-        "cards": cards,
-        "substitutions": subs
-    }, "tm")
-
-
-# ------------------------------------------------
-# HEALTH
-# ------------------------------------------------
-
-@router.get("/health")
-def health():
-    return {"status": "ok"}
+    return ok(rows, "tm")
